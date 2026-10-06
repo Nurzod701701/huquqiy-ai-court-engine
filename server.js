@@ -261,6 +261,63 @@ ${compact}`;
     score,total:answers.length
   });
 });
+app.post("/api/test-translate", async (req,res)=>{
+  try{
+    const target=lang(req.body?.language);
+    const code=txt(req.body?.code,30);
+    const topic=txt(req.body?.topic,300);
+    const questions=Array.isArray(req.body?.questions)?req.body.questions.slice(0,20):[];
+    if(target==="uz") return res.json({ok:true,questions,provider:"original"});
+    if(!questions.length) return res.status(400).json({ok:false,error:"Tarjima uchun testlar kelmadi."});
+    if(!ai) return res.status(503).json({ok:false,error:"Gemini translator tayyor emas."});
+
+    const targetName=target==="ru"?"Russian":"English";
+    const source=questions.map((q,i)=>({
+      n:i+1,id:q.id,q:q.q,options:q.options,explanation:q.explanation,legalBasis:q.legalBasis
+    }));
+    const prompt=`Translate this Uzbek procedural-law test material into ${targetName}.
+STRICT RULES:
+- Return ONLY valid JSON object: {"questions":[...]}.
+- Preserve n and id exactly.
+- Preserve array order and all four option positions exactly; NEVER move options.
+- Translate q, every options item, explanation, legalBasis.
+- Do not answer the questions and do not change legal meaning.
+- Keep abbreviations JPK, FPK, IPK, MSIYtK unchanged.
+- Do not invent article numbers or legal rules.
+- Output exactly ${questions.length} questions.
+
+INPUT:
+${JSON.stringify(source)}`;
+
+    let last="";
+    for(let attempt=1;attempt<=3;attempt++){
+      try{
+        const r=await ai.interactions.create({model:GEMINI_MODEL,input:prompt});
+        const raw=String(r?.output_text||"").trim();
+        const parsed=parseJSON(raw);
+        const out=Array.isArray(parsed?.questions)?parsed.questions:[];
+        if(out.length===questions.length){
+          const safe=out.map((x,i)=>({
+            id:questions[i].id,
+            q:txt(x.q,1200)||questions[i].q,
+            options:Array.isArray(x.options)&&x.options.length===4?x.options.map(v=>txt(v,700)):questions[i].options,
+            correct:questions[i].correct,
+            explanation:txt(x.explanation,1200)||questions[i].explanation,
+            legalBasis:txt(x.legalBasis,600)||questions[i].legalBasis
+          }));
+          return res.json({ok:true,questions:safe,provider:"gemini",language:target});
+        }
+        last="Gemini tarjimada savollar sonini o'zgartirdi.";
+      }catch(e){
+        last=String(e?.message||e);
+        if(attempt<3) await sleep(attempt*900);
+      }
+    }
+    return res.status(503).json({ok:false,error:"Tarjima xizmati vaqtincha band: "+last.slice(0,300)});
+  }catch(e){
+    return res.status(500).json({ok:false,error:"Test tarjima xatosi: "+String(e?.message||e).slice(0,500)});
+  }
+});
 
 app.get("/api/test-analysis/health", async (req,res)=>{
   res.json({
@@ -288,7 +345,7 @@ app.use((err,req,res,next)=>{
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
 console.log("GEMINI API MODE: INTERACTIONS");
 app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V19 RESILIENT");
+ console.log("HUQUQIY AI COURT ENGINE V21 MULTILINGUAL TESTS");
  console.log("PORT:",PORT);
  console.log("MODEL:",GEMINI_MODEL);
  console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
