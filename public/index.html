@@ -5660,5 +5660,57 @@ async function analyzeMistakesWithGemini(){
 window.addEventListener("load",()=>setTimeout(showPortalChoice,80));
 </script>
 
+
+<style id="hai-v13-home-nav">
+#haiGlobalHomeBtn{
+ position:fixed;left:18px;bottom:18px;z-index:99999;
+ min-height:50px;padding:12px 18px;border-radius:15px;
+ border:1px solid #f2d77c;
+ background:linear-gradient(135deg,#f2d77c,#d4af37,#9b7415);
+ color:#071426;font-weight:900;font-size:16px;cursor:pointer;
+ box-shadow:0 12px 32px rgba(0,0,0,.35)
+}
+#haiGlobalHomeBtn:hover{transform:translateY(-1px)}
+@media(max-width:760px){#haiGlobalHomeBtn{left:12px;bottom:12px;min-height:48px;padding:10px 14px;font-size:15px}}
+</style>
+<button id="haiGlobalHomeBtn" type="button" onclick="haiReturnToMainPortal()">⌂ Asosiy menyu</button>
+<script id="hai-v13-home-nav-script">
+function haiReturnToMainPortal(){
+  try{
+    // Stop/leave court UI state without deleting any stored case/test data.
+    if(typeof recognition!=="undefined" && recognition){try{recognition.stop()}catch(e){}}
+  }catch(e){}
+  try{
+    document.querySelectorAll("body > section, body > main").forEach(el=>{
+      if(!["portalChoice","testHub","testTopics","testRunner","testResult"].includes(el.id)){
+        if(el.id==="home") el.style.display="none";
+      }
+    });
+  }catch(e){}
+  if(typeof showPortalChoice==="function"){
+    showPortalChoice();
+  }else{
+    const p=document.getElementById("portalChoice");
+    if(p){p.style.display="block";window.scrollTo({top:0,behavior:"smooth"});}
+  }
+}
+(function(){
+  const btn=document.getElementById("haiGlobalHomeBtn");
+  function syncHaiHomeBtn(){
+    if(!btn)return;
+    const portal=document.getElementById("portalChoice");
+    const tests=["testHub","testTopics","testRunner","testResult"].some(id=>{
+      const e=document.getElementById(id);
+      return e && getComputedStyle(e).display!=="none";
+    });
+    const portalVisible=portal && getComputedStyle(portal).display!=="none";
+    btn.style.display=(portalVisible||tests)?"none":"block";
+  }
+  new MutationObserver(syncHaiHomeBtn).observe(document.body,{attributes:true,subtree:true,attributeFilter:["style","class"]});
+  window.addEventListener("load",()=>setTimeout(syncHaiHomeBtn,150));
+  document.addEventListener("click",()=>setTimeout(syncHaiHomeBtn,80));
+})();
+</script>
+
 </body>
 </html>
