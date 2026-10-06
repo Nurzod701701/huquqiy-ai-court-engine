@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,8 +128,11 @@ ${q}
 
 Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
 
- const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{systemInstruction:systemPrompt(l),temperature:0.35,responseMimeType:"application/json"}});
- const o=parseJSON(r.text);
+ const r=await ai.interactions.create({
+   model:GEMINI_MODEL,
+   input:systemPrompt(l)+"\n\n"+prompt
+ });
+ const o=parseJSON(r.output_text);
  const result={
   kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
   target:o.target==null?null:txt(o.target,100),
@@ -207,13 +210,12 @@ Oxirida: KUCHLI TOMONLAR, XATOLAR/ZAIF TOMONLAR, 3-5 TA TAVSIYA ber.
 
 ${compact}`;
 
-    const response=await ai.models.generateContent({
+    const response=await ai.interactions.create({
       model:GEMINI_MODEL,
-      contents:prompt,
-      config:{temperature:0.15}
+      input:prompt
     });
 
-    const analysis=String(response?.text||"").trim();
+    const analysis=String(response?.output_text||"").trim();
     console.log("TEST_ANALYSIS_SUCCESS:", {chars:analysis.length});
     if(!analysis){
       return res.status(502).json({ok:false,error:"Gemini javob berdi, lekin matn bo'sh qaytdi.",provider:"gemini"});
@@ -254,8 +256,9 @@ app.use((err,req,res,next)=>{
 });
 
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
+console.log("GEMINI API MODE: INTERACTIONS");
 app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V16 FINAL");
+ console.log("HUQUQIY AI COURT ENGINE V17 GEMINI 3.8");
  console.log("PORT:",PORT);
  console.log("MODEL:",GEMINI_MODEL);
  console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
