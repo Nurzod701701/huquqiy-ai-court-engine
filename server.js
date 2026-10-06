@@ -164,6 +164,52 @@ app.get("/api/session/:sessionId",(req,res)=>{
  res.json({ok:true,sessionId:id,turns:s.turns});
 });
 
+
+app.post("/api/test-analysis", async (req,res)=>{
+  try{
+    const l=lang(req.body?.language);
+    const code=txt(req.body?.code,30);
+    const topic=txt(req.body?.topic,300);
+    const score=Number(req.body?.score||0);
+    const mistakes=Array.isArray(req.body?.mistakes)?req.body.mistakes.slice(0,20):[];
+    if(!mistakes.length){
+      const perfect=l==="ru"?"Ошибок нет. Отличный результат.":l==="en"?"No mistakes. Excellent result.":"Xato yo‘q. A’lo natija.";
+      return res.json({ok:true,analysis:perfect});
+    }
+    const stored=mistakes.map((m,i)=>`${i+1}) SAVOL: ${txt(m.question,1000)}
+TALABA JAVOBI: ${txt(m.student,500)}
+BAZADAGI TO‘G‘RI JAVOB: ${txt(m.correct,500)}
+BAZADAGI IZOH: ${txt(m.explanation,1000)}
+HUQUQIY ASOS YO‘NALISHI: ${txt(m.legalBasis,500)}`).join("\n\n");
+    if(!ai){
+      const local=l==="ru"?"Gemini API kaliti sozlanmagan. Xatolar yuqoridagi bazaviy izohlar bo‘yicha ko‘rsatildi.":l==="en"?"Gemini API key is not configured. Review the stored explanations above.":"Gemini API kaliti sozlanmagan. Yuqoridagi bazaviy tushuntirishlarni qayta ko‘rib chiqing.";
+      return res.json({ok:true,analysis:local,provider:"local-fallback"});
+    }
+    const prompt=`SEN HUQUQIY AI TEST TAHLILCHISISAN.
+${languageRule(l)}
+Kodeks: ${code}
+Mavzu: ${topic}
+Natija: ${score}/20
+
+QAT'IY QOIDA:
+- To‘g‘ri javobni o‘zing qayta ixtiro qilma.
+- Faqat quyida server bazasidan berilgan TO‘G‘RI JAVOB va IZOHga tayangan holda talabaning xatosini tahlil qil.
+- Yangi modda raqamini o‘ylab topma.
+- Talabaning asosiy zaif mavzularini guruhla.
+- Har xatoni takrorlab cho‘zma; professional va tushunarli tahlil ber.
+- Yakunda 3-5 ta aniq o‘qish tavsiyasi ber.
+
+XATOLAR:
+${stored}`;
+    const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{temperature:0.25}});
+    res.json({ok:true,analysis:txt(r.text,12000),provider:"gemini",language:l});
+  }catch(e){
+    console.error("TEST_ANALYSIS_ERROR:",e?.message||e);
+    res.status(500).json({ok:false,error:"Test analysis failed"});
+  }
+});
+
+
 /* EXPRESS 5 FIX: app.get("*") YO‘Q */
 app.use((req,res,next)=>{
  if(req.path.startsWith("/api/"))return res.status(404).json({ok:false,error:"API route not found"});
