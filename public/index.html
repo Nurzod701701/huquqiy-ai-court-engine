@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Huquqiy AI — Sud Simulyatsiyasi</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f7fb;
+      color: #172033;
+    }
+
+    header {
+      background: #102a43;
+      color: white;
+      padding: 24px;
+      text-align: center;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 30px auto;
+      padding: 20px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 8px 25px rgba(0,0,0,.08);
+    }
+
+    label {
+      display: block;
+      font-weight: bold;
+      margin: 15px 0 8px;
+    }
+
+    select,
+    textarea {
+      width: 100%;
+      padding: 14px;
+      font-size: 17px;
+      border: 1px solid #ccd6e0;
+      border-radius: 10px;
+    }
+
+    textarea {
+      min-height: 130px;
+      resize: vertical;
+    }
+
+    button {
+      margin-top: 15px;
+      padding: 14px 24px;
+      border: 0;
+      border-radius: 10px;
+      background: #0b7285;
+      color: white;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      opacity: .9;
+    }
+
+    #court {
+      min-height: 180px;
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
+
+    .judge {
+      padding: 14px;
+      background: #eef4fa;
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+
+    .student {
+      padding: 14px;
+      background: #e8f7f3;
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+
+    .status {
+      font-size: 14px;
+      margin-top: 10px;
+      color: #52606d;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>HUQUQIY AI</h1>
+  <div>Dinamik sud simulyatsiyasi</div>
+</header>
+
+<div class="container">
+
+  <div class="card">
+
+    <h2>Sud jarayoni</h2>
+
+    <label>Ish turi</label>
+
+    <select id="direction">
+      <option value="criminal">Jinoyat ishi</option>
+      <option value="civil">Fuqarolik ishi</option>
+      <option value="economic">Iqtisodiy ish</option>
+      <option value="administrative">Ma'muriy ish</option>
+    </select>
+
+
+    <label>Suddagi rolingiz</label>
+
+    <select id="role">
+      <option>Prokuror</option>
+      <option>Himoyachi</option>
+      <option>Sudya</option>
+      <option>Sudlanuvchi</option>
+      <option>Jabrlanuvchi</option>
+    </select>
+
+  </div>
+
+
+  <div class="card">
+
+    <h2>Sud majlisi</h2>
+
+    <div id="court">
+
+      <div class="judge">
+        <b>Sudya:</b>
+        Sud majlisi boshlandi. Taraflar sud muhokamasiga tayyormi?
+      </div>
+
+    </div>
+
+
+    <label>Sizning savolingiz yoki bayonotingiz</label>
+
+    <textarea
+      id="question"
+      placeholder="Masalan: Guvoh, voqea sodir bo'lgan vaqtda aynan qayerda edingiz?"
+    ></textarea>
+
+    <button onclick="sendCourtTurn()">
+      Sudga murojaat qilish
+    </button>
+
+    <div id="status" class="status">
+      Gemini Court Engine ulanishga tayyor.
+    </div>
+
+  </div>
+
+</div>
+
+
+<script>
+
+const memory = [];
+
+const demoCase = {
+
+  title:
+    "Qasddan odam o'ldirish bo'yicha o'quv kazusi",
+
+  facts: `
+2026-yil 12-yanvar kuni taxminan soat 22:35 da
+Toshkent shahri Shayxontohur tumanida
+Jasur Mirzayev va Anvar Sodiqov o'rtasida mojaro yuz bergan.
+
+Anvar Sodiqov tan jarohati oqibatida vafot etgan.
+
+Tomonlar o'rtasida oldindan qarz masalasida nizo bo'lgan.
+
+Sudlanuvchi marhum birinchi bo'lib pichoq chiqarganini bildirgan.
+
+Hodisa joyidagi kuzatuv kamerasining bir qismi
+to'siq sababli voqeani to'liq qayd etmagan.
+`,
+
+  evidenceDossier: `
+1. Hodisa joyidan pichoq olingan.
+
+2. Pichoqda ikki shaxsga tegishli biologik izlar aniqlangan.
+
+3. 112 xizmatiga soat 22:38 da qo'ng'iroq qilingan.
+
+4. Guvoh janjalni ko'rgan,
+ammo birinchi jismoniy harakatni aniq ko'rmagan.
+
+5. Tomonlar o'rtasidagi ayrim Telegram yozishmalari o'chirilgan.
+
+6. Kamera tasviri hodisaning barcha qismini ko'rsatmaydi.
+`,
+
+  people: {
+
+    judge:
+      "Sudya Azizbek Karimov",
+
+    prosecutor:
+      "Prokuror Sardor Rahimov",
+
+    defense:
+      "Himoyachi Dilshod Akramov",
+
+    defendant:
+      "Jasur Mirzayev",
+
+    victim:
+      "Anvar Sodiqov",
+
+    witness:
+      "Guvoh Sherzod Aliyev",
+
+    expert:
+      "Ekspert Kamola Usmonova"
+  }
+};
+
+
+function addMessage(type, title, text) {
+
+  const court =
+    document.getElementById("court");
+
+  const div =
+    document.createElement("div");
+
+  div.className = type;
+
+  div.innerHTML =
+    "<b>" +
+    escapeHtml(title) +
+    ":</b> " +
+    escapeHtml(text);
+
+  court.appendChild(div);
+
+  div.scrollIntoView({
+    behavior: "smooth",
+    block: "end"
+  });
+}
+
+
+function escapeHtml(text) {
+
+  const div =
+    document.createElement("div");
+
+  div.textContent =
+    String(text || "");
+
+  return div.innerHTML;
+}
+
+
+async function sendCourtTurn() {
+
+  const questionElement =
+    document.getElementById("question");
+
+  const question =
+    questionElement.value.trim();
+
+  if (!question) {
+
+    alert(
+      "Savol yoki bayonotingizni yozing."
+    );
+
+    return;
+  }
+
+
+  const role =
+    document.getElementById("role").value;
+
+  const direction =
+    document.getElementById("direction").value;
+
+  const status =
+    document.getElementById("status");
+
+
+  addMessage(
+    "student",
+    role,
+    question
+  );
+
+
+  memory.push({
+
+    speaker: role,
+
+    text: question
+
+  });
+
+
+  questionElement.value = "";
+
+  status.textContent =
+    "Sud ishtirokchisining javobi tayyorlanmoqda...";
+
+
+  try {
+
+    const response =
+      await fetch(
+        "/api/court-turn",
+        {
+
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body: JSON.stringify({
+
+            sessionId:
+              "court-demo-1",
+
+            direction,
+
+            caseIndex: 0,
+
+            role,
+
+            stage:
+              "Dalillarni tekshirish",
+
+            prompt:
+              "Talabaga sud jarayonida erkin savol berish imkoniyati berilgan.",
+
+            question,
+
+            caseData:
+              demoCase,
+
+            memory:
+              memory.slice(-12)
+
+          })
+
+        }
+      );
+
+
+    const data =
+      await response.json();
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        data.detail ||
+        data.error ||
+        "Server xatosi"
+      );
+
+    }
+
+
+    if (data.answer) {
+
+      addMessage(
+        "judge",
+        data.target ||
+        "Sud ishtirokchisi",
+        data.answer
+      );
+
+
+      memory.push({
+
+        speaker:
+          data.target ||
+          "Sud ishtirokchisi",
+
+        text:
+          data.answer
+
+      });
+
+    }
+
+
+    if (data.judgeReaction) {
+
+      addMessage(
+        "judge",
+        "Sudya",
+        data.judgeReaction
+      );
+
+
+      memory.push({
+
+        speaker: "Sudya",
+
+        text:
+          data.judgeReaction
+
+      });
+
+    }
+
+
+    if (data.kind === "END") {
+
+      status.textContent =
+        "Savollar yakunlandi. Keyingi protsessual bosqichga o'tish mumkin.";
+
+    } else {
+
+      status.textContent =
+        "Sud jarayoni davom etmoqda. Qo'shimcha savol berishingiz mumkin.";
+
+    }
+
+
+  } catch (error) {
+
+    console.error(error);
+
+    status.textContent =
+      "Gemini bilan ulanishda xato: " +
+      error.message;
+
+  }
+
+}
+
+</script>
+
+</body>
+</html>
