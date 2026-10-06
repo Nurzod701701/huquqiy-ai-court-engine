@@ -5614,27 +5614,58 @@ function renderQuestion(){
  document.getElementById("testProgressBar").style.width=((HAI_TEST.index)/20*100)+"%";
  const box=document.getElementById("testQuestionBox");
  box.innerHTML=`<small>${t.name}</small><h3>${HAI_TEST.index+1}. ${q.q}</h3><div id="opts"></div><button id="testNext" class="haiNext" disabled onclick="nextTestQuestion()">${HAI_TEST.index===19?"Natijani ko‘rish":"Keyingi savol →"}</button>`;
+ const correctText=String(q.options[Number(q.correct)]||"");
+ // Display order rotates per question. Correctness is checked by answer TEXT, not A/B/C/D index.
+ const order=[0,1,2,3];
+ const shift=(HAI_TEST.index+HAI_TEST.topic)%4;
+ for(let k=0;k<shift;k++)order.push(order.shift());
  const o=document.getElementById("opts");
- q.options.forEach((x,j)=>o.insertAdjacentHTML("beforeend",`<button class="haiOption" onclick="selectTestOption(${j},this)"><b>${"ABCD"[j]}.</b> ${x}</button>`));
+ order.forEach((originalIndex,displayIndex)=>{
+   const x=q.options[originalIndex];
+   const safe=encodeURIComponent(String(x));
+   o.insertAdjacentHTML("beforeend",`<button class="haiOption" data-answer="${safe}" onclick="selectTestOptionValue(this)"><b>${"ABCD"[displayIndex]}.</b> ${x}</button>`);
+ });
+ HAI_TEST.correctText=correctText;
+ HAI_TEST.selectedText=null;
 }
-function selectTestOption(j,el){
- HAI_TEST.selected=j;document.querySelectorAll(".haiOption").forEach(x=>x.classList.remove("selected"));el.classList.add("selected");document.getElementById("testNext").disabled=false;
+function selectTestOptionValue(el){
+ HAI_TEST.selectedText=decodeURIComponent(el.dataset.answer||"");
+ document.querySelectorAll(".haiOption").forEach(x=>x.classList.remove("selected"));
+ el.classList.add("selected");
+ document.getElementById("testNext").disabled=false;
 }
 function nextTestQuestion(){
  const q=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic].questions[HAI_TEST.index];
- HAI_TEST.answers.push({id:q.id,selected:Number(HAI_TEST.selected),correct:Number(q.correct)});
- if(HAI_TEST.index<19){HAI_TEST.index++;HAI_TEST.selected=null;renderQuestion()}else finishTest();
+ const correctText=String(q.options[Number(q.correct)]||"");
+ const selectedText=String(HAI_TEST.selectedText||"");
+ HAI_TEST.answers.push({
+   id:q.id,
+   selectedText,
+   correctText,
+   isCorrect:selectedText.trim()===correctText.trim()
+ });
+ if(HAI_TEST.index<19){
+   HAI_TEST.index++;HAI_TEST.selectedText=null;HAI_TEST.correctText=null;renderQuestion();
+ }else finishTest();
 }
 function finishTest(){
  hideTestScreens();document.getElementById("testResult").style.display="block";
  const t=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic];
  let score=0,mistakes=[],allAnswers=[];
  HAI_TEST.answers.forEach((a,i)=>{
-   const q=t.questions[i], selected=Number(a.selected), correct=Number(q.correct);
-   const isCorrect=selected===correct;
-   if(isCorrect) score++;
-   const row={number:i+1,question:q.q,student:q.options[selected]??"Javob belgilanmagan",correct:q.options[correct],isCorrect,explanation:q.explanation,legalBasis:q.legalBasis};
-   allAnswers.push(row); if(!isCorrect) mistakes.push(row);
+   const q=t.questions[i];
+   const isCorrect=String(a.selectedText||"").trim()===String(a.correctText||"").trim();
+   if(isCorrect)score++;
+   const row={
+     number:i+1,question:q.q,
+     student:a.selectedText||"Javob belgilanmagan",
+     correct:a.correctText||q.options[Number(q.correct)],
+     isCorrect,
+     explanation:q.explanation,
+     legalBasis:q.legalBasis
+   };
+   allAnswers.push(row);
+   if(!isCorrect)mistakes.push(row);
  });
  localStorage.setItem(`hai_score_${HAI_TEST.code}_${HAI_TEST.topic}`,score);
  const completed=new Set(JSON.parse(localStorage.getItem("hai_completed_"+HAI_TEST.code)||"[]"));
@@ -5642,20 +5673,47 @@ function finishTest(){
  localStorage.setItem("hai_completed_"+HAI_TEST.code,JSON.stringify([...completed]));
  localStorage.setItem("hai_done_"+HAI_TEST.code,String(completed.size*20));
  document.getElementById("testScore").textContent=`${score}/20 — ${Math.round(score/20*100)}%`;
- document.getElementById("testResultText").textContent=`${mistakes.length} ta xato. Gemini 20 ta javobingizning barchasini tahlil qiladi.`;
+ document.getElementById("testResultText").textContent=`${mistakes.length} ta xato. Gemini barcha ${allAnswers.length} ta javobni tahlil qiladi.`;
  const m=document.getElementById("mistakeList");m.innerHTML="";
- if(!mistakes.length)m.innerHTML='<div class="haiMistake"><b>20/20 — xato yo‘q.</b><br>Gemini to‘g‘ri javoblaringizni ham tahlil qiladi.</div>';
- mistakes.forEach(x=>m.insertAdjacentHTML("beforeend",`<div class="haiMistake"><b>${x.number}-savol</b><br>Siz: ${x.student}<br><b>To‘g‘ri:</b> ${x.correct}<br>${x.explanation}<br><small>${x.legalBasis}</small></div>`));
+ if(!mistakes.length)m.innerHTML='<div class="haiMistake"><b>Xato aniqlanmadi.</b><br>Gemini baribir barcha javoblarni tahlil qiladi.</div>';
+ mistakes.forEach(x=>m.insertAdjacentHTML("beforeend",`<div class="haiMistake"><b>${x.number}-savol — XATO</b><br>Siz: ${x.student}<br><b>To‘g‘ri:</b> ${x.correct}<br>${x.explanation}<br><small>${x.legalBasis}</small></div>`));
  HAI_TEST.lastResult={score,mistakes,allAnswers,topic:t.name};
 }
 async function analyzeMistakesWithGemini(){
- const box=document.getElementById("geminiTestAnalysis");box.style.display="block";box.textContent="Gemini xatolaringizni tahlil qilmoqda...";
- const r=HAI_TEST.lastResult;if(!r)return;
+ const box=document.getElementById("geminiTestAnalysis");
+ box.style.display="block";
+ box.textContent="Gemini 20 ta javobingizni tahlil qilmoqda...";
+ // V16 final matched frontend/backend
+ const r=HAI_TEST.lastResult;
+ if(!r||!Array.isArray(r.allAnswers)){box.textContent="Test natijalari topilmadi. Testni qayta yakunlang.";return;}
  try{
-  const res=await fetch("/api/test-analysis",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({language:(typeof currentLanguage!=="undefined"?currentLanguage:"uz"),code:HAI_TEST.code,topic:r.topic,score:r.score,mistakes:r.mistakes,answers:r.allAnswers||[]})});
-  const data=await res.json();box.textContent=data.analysis||data.answer||"Tahlil olinmadi.";
- }catch(e){box.textContent="Gemini tahliliga ulanishda xato. Serverdagi /api/test-analysis endpointini yangilang."}
+  const payload={
+    language:(typeof currentLanguage!=="undefined"?currentLanguage:"uz"),
+    code:HAI_TEST.code,topic:r.topic,score:r.score,
+    mistakes:r.mistakes||[],answers:r.allAnswers
+  };
+  const res=await fetch("/api/test-analysis",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Accept":"application/json"},
+    body:JSON.stringify(payload)
+  });
+  const raw=await res.text();
+  let data={};
+  try{data=JSON.parse(raw)}catch(e){
+    box.textContent=`Server JSON qaytarmadi (${res.status}). ${raw.slice(0,500)}`;
+    return;
+  }
+  if(!res.ok){
+    box.textContent=`Gemini tahlil xatosi (${res.status}): ${data.error||data.message||"noma’lum server xatosi"}`;
+    return;
+  }
+  const analysis=data.analysis||data.answer||data.text||data.result;
+  box.textContent=analysis?analysis:"Server javob berdi, lekin tahlil matni bo‘sh. Provider: "+(data.provider||"noma’lum");
+ }catch(e){
+  box.textContent="Gemini tahliliga ulanishda xato: "+(e?.message||String(e));
+ }
 }
+
 // V11 portal becomes the first visible content without deleting the existing court.
 window.addEventListener("load",()=>setTimeout(showPortalChoice,80));
 </script>
@@ -5712,5 +5770,6 @@ function haiReturnToMainPortal(){
 })();
 </script>
 
+<div id="haiBuildVersion" style="display:none">V16-FINAL</div>
 </body>
 </html>
