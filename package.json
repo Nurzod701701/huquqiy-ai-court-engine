@@ -1,14 +1,17 @@
 {
   "name": "huquqiy-ai-court-engine",
-  "version": "8.0.0",
+  "version": "1.0.0",
+  "description": "Huquqiy AI Court Engine - Sud Simulyatori va Protsessual Testlar",
   "type": "module",
-  "description": "Huquqiy AI Gemini Dynamic Court Engine",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@google/genai": "^1.0.0",
+    "@google/genai": "^2.24.0",
     "express": "^5.1.0"
   }
 }
