@@ -816,6 +816,198 @@ small, .small, .muted, [class*="subtitle"], [class*="meta"] { font-size: 14px !i
 <style id="trilingual-ui-v1">
 .langSwitch{position:fixed;right:22px;top:18px;z-index:10050;display:flex;gap:6px;padding:7px;background:rgba(250,248,242,.96);border:1px solid #d7d1c5;border-radius:14px;box-shadow:0 8px 24px rgba(20,43,35,.16);backdrop-filter:blur(12px)}.langBtn{min-width:52px;height:42px;border:1px solid #c9c1b4;border-radius:9px;background:#fffdf8;color:#17382f;font-size:15px;font-weight:900;cursor:pointer}.langBtn.active{background:#17382f;color:#fff;border-color:#17382f}.langLabel{position:fixed;right:22px;top:70px;z-index:10049;font-size:11px;font-weight:800;color:#6d6a62;background:#f8f5ed;padding:4px 8px;border-radius:7px}@media(max-width:700px){.langSwitch{right:8px;top:8px}.langLabel{display:none}.langBtn{min-width:44px;height:38px;font-size:13px}header{padding-top:62px!important}}
 </style>
+
+<style id="huquqiy-ai-premium-v10">
+:root{
+  --hai-navy:#06162f;
+  --hai-navy-2:#0a2347;
+  --hai-blue:#123f78;
+  --hai-blue-soft:#1b579c;
+  --hai-gold:#d4af37;
+  --hai-gold-light:#f2d77c;
+  --hai-gold-deep:#9b7415;
+  --hai-ivory:#fffaf0;
+  --hai-text:#f7f9fc;
+  --hai-muted:#c7d1df;
+  --hai-panel:rgba(9,31,63,.94);
+  --hai-panel-2:rgba(13,45,86,.88);
+  --hai-line:rgba(212,175,55,.42);
+  --hai-shadow:0 22px 60px rgba(0,0,0,.34);
+}
+*{box-sizing:border-box}
+html{font-size:18px;scroll-behavior:smooth}
+body{
+  margin:0;
+  min-height:100vh;
+  color:var(--hai-text)!important;
+  background:
+    radial-gradient(circle at 12% 0%,rgba(35,91,157,.30),transparent 34%),
+    radial-gradient(circle at 88% 12%,rgba(212,175,55,.10),transparent 28%),
+    linear-gradient(145deg,#031022 0%,#071a35 46%,#0a2447 100%)!important;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;
+  line-height:1.62;
+  letter-spacing:.01em;
+}
+body:before{
+  content:"";
+  position:fixed;inset:0;pointer-events:none;z-index:-1;
+  background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);
+  background-size:42px 42px;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.8),transparent 85%);
+}
+header{
+  position:relative;
+  overflow:hidden;
+  padding:34px 28px!important;
+  border-bottom:1px solid var(--hai-line)!important;
+  background:linear-gradient(110deg,rgba(4,18,39,.98),rgba(10,42,83,.96))!important;
+  box-shadow:0 12px 40px rgba(0,0,0,.25)!important;
+}
+header:after{
+  content:"";
+  position:absolute;left:0;right:0;bottom:0;height:3px;
+  background:linear-gradient(90deg,transparent,var(--hai-gold),var(--hai-gold-light),var(--hai-gold),transparent);
+}
+header h1{
+  margin:0!important;
+  font-size:clamp(1.75rem,3vw,2.65rem)!important;
+  font-weight:850!important;
+  letter-spacing:.035em!important;
+  color:var(--hai-ivory)!important;
+  text-shadow:0 2px 20px rgba(0,0,0,.3);
+}
+header p{
+  margin:10px 0 0!important;
+  font-size:clamp(1rem,1.5vw,1.18rem)!important;
+  color:var(--hai-muted)!important;
+}
+h1,h2,h3,h4{font-weight:800!important}
+h2{
+  font-size:clamp(1.55rem,2.5vw,2.2rem)!important;
+  color:var(--hai-ivory)!important;
+}
+h3{font-size:clamp(1.18rem,1.8vw,1.5rem)!important}
+p,li,label,input,textarea,select,button{font-size:1rem}
+button,.btn,.navBtn,.back,.langBtn{
+  min-height:48px!important;
+  border-radius:14px!important;
+  font-weight:750!important;
+  letter-spacing:.015em;
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important;
+}
+button:hover,.btn:hover,.navBtn:hover,.back:hover,.langBtn:hover{
+  transform:translateY(-2px);
+}
+.langBtn{
+  color:var(--hai-ivory)!important;
+  background:rgba(255,255,255,.055)!important;
+  border:1px solid rgba(212,175,55,.34)!important;
+  padding:10px 16px!important;
+}
+.langBtn.active{
+  color:#101010!important;
+  background:linear-gradient(135deg,var(--hai-gold-light),var(--hai-gold))!important;
+  border-color:var(--hai-gold-light)!important;
+  box-shadow:0 8px 26px rgba(212,175,55,.24)!important;
+}
+.langLabel{color:var(--hai-gold-light)!important;font-weight:800!important}
+.card,.panel,.caseCard,.roleCard,.directionCard,.courtCard,.box,.stageCard{
+  background:linear-gradient(145deg,rgba(12,40,77,.96),rgba(5,24,50,.96))!important;
+  border:1px solid var(--hai-line)!important;
+  border-radius:20px!important;
+  box-shadow:var(--hai-shadow)!important;
+  color:var(--hai-text)!important;
+}
+.caseCard,.roleCard,.directionCard{
+  padding:22px!important;
+}
+.caseCard:hover,.roleCard:hover,.directionCard:hover{
+  border-color:var(--hai-gold)!important;
+  box-shadow:0 22px 60px rgba(0,0,0,.40),0 0 0 1px rgba(212,175,55,.20)!important;
+}
+.caseCard h3,.roleCard h3,.directionCard h3,
+.caseCard strong,.roleCard strong,.directionCard strong{
+  color:var(--hai-gold-light)!important;
+}
+button.primary,.primary,.startBtn,#startBtn,#sendBtn,.goldBtn{
+  color:#111!important;
+  border:1px solid #f5df91!important;
+  background:linear-gradient(135deg,#f3dc88 0%,#d4af37 48%,#a97e19 100%)!important;
+  box-shadow:0 12px 28px rgba(212,175,55,.23)!important;
+}
+button.secondary,.secondary,.navBtn,.back{
+  color:var(--hai-ivory)!important;
+  border:1px solid rgba(212,175,55,.46)!important;
+  background:linear-gradient(145deg,rgba(18,63,120,.92),rgba(8,32,65,.96))!important;
+}
+input,textarea,select{
+  min-height:48px!important;
+  color:var(--hai-text)!important;
+  background:rgba(2,14,31,.76)!important;
+  border:1px solid rgba(212,175,55,.34)!important;
+  border-radius:14px!important;
+  padding:13px 15px!important;
+  outline:none!important;
+}
+textarea{min-height:112px!important;resize:vertical}
+input:focus,textarea:focus,select:focus{
+  border-color:var(--hai-gold)!important;
+  box-shadow:0 0 0 3px rgba(212,175,55,.13)!important;
+}
+.chat,.chatBox,#chat,#courtChat,.messages{
+  background:linear-gradient(180deg,rgba(2,15,32,.78),rgba(7,27,55,.88))!important;
+  border:1px solid rgba(212,175,55,.28)!important;
+  border-radius:20px!important;
+}
+.message,.msg,.bubble{
+  font-size:1.02rem!important;
+  line-height:1.65!important;
+}
+.badge,.tag,.pill{
+  border:1px solid rgba(212,175,55,.35)!important;
+  background:rgba(212,175,55,.10)!important;
+  color:var(--hai-gold-light)!important;
+}
+hr{border-color:rgba(212,175,55,.24)!important}
+small,.muted{color:var(--hai-muted)!important}
+a{color:var(--hai-gold-light)}
+table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  overflow:hidden;
+  border:1px solid var(--hai-line);
+  border-radius:16px;
+  background:rgba(4,22,45,.72);
+}
+th{color:#151515!important;background:linear-gradient(135deg,var(--hai-gold-light),var(--hai-gold))!important}
+td,th{padding:13px 15px!important;border-bottom:1px solid rgba(212,175,55,.15)!important}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#06162f}
+::-webkit-scrollbar-thumb{background:linear-gradient(var(--hai-gold),var(--hai-gold-deep));border-radius:20px;border:2px solid #06162f}
+
+@media(max-width:780px){
+  html{font-size:17px}
+  body{padding-bottom:env(safe-area-inset-bottom)}
+  header{padding:25px 18px!important}
+  header h1{font-size:1.75rem!important}
+  header p{font-size:1rem!important}
+  h2{font-size:1.5rem!important}
+  .caseCard,.roleCard,.directionCard,.card,.panel{padding:18px!important;border-radius:17px!important}
+  button,.btn,.navBtn,.back,.langBtn{
+    min-height:50px!important;
+    font-size:1rem!important;
+    touch-action:manipulation;
+  }
+  input,textarea,select{font-size:16px!important}
+  .message,.msg,.bubble{font-size:1rem!important}
+  .grid,.cards,.caseGrid,.roleGrid{grid-template-columns:1fr!important}
+}
+@media(min-width:1200px){
+  html{font-size:19px}
+}
+</style>
+
 </head>
 
 <body>
