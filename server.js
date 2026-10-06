@@ -1,141 +1,186 @@
 import express from "express";
-import { GoogleGenAI } from "@google/genai";
 import path from "path";
 import { fileURLToPath } from "url";
+import { GoogleGenAI } from "@google/genai";
 
-const __filename=fileURLToPath(import.meta.url);
-const __dirname=path.dirname(__filename);
-const app=express();
-const port=Number(process.env.PORT || 10000);
-const model=process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const app = express();
+const PORT = Number(process.env.PORT || 10000);
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-app.use(express.json({limit:"2mb"}));
-app.use(express.static(path.join(__dirname,"public")));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
-const ai=new GoogleGenAI({apiKey:process.env.GEMINI_API_KEY});
+app.disable("x-powered-by");
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(express.static(path.join(__dirname, "public")));
 
-function safeText(v,max=18000){
-  return typeof v==="string" ? v.slice(0,max) : "";
+const sessions = new Map();
+const MAX_TURNS = 30;
+
+function txt(v, n=10000){ return String(v ?? "").replace(/\0/g,"").trim().slice(0,n); }
+function lang(v){ v=txt(v,10).toLowerCase(); return v==="ru"?"ru":v==="en"?"en":"uz"; }
+
+function session(id){
+  id=txt(id,100)||"anonymous";
+  if(!sessions.has(id)) sessions.set(id,{createdAt:Date.now(),turns:[]});
+  return sessions.get(id);
+}
+function remember(s,t){ s.turns.push(t); if(s.turns.length>MAX_TURNS)s.turns=s.turns.slice(-MAX_TURNS); }
+
+function action(q){
+  const t=txt(q,5000).toLowerCase();
+  if(t.includes("e'tiroz")||t.includes("e’tiroz")||t.includes("возраж")||t.includes("objection")) return "OBJECTION";
+  if(t.includes("iltimosnoma")||t.includes("ходатай")||t.includes("motion")) return "MOTION";
+  if(t.includes("savolim yo'q")||t.includes("savolim yo‘q")||t.includes("вопросов нет")||t.includes("no further questions")) return "END";
+  if(t.includes("?")) return "QUESTION";
+  return "STATEMENT";
 }
 
-function normalizeResult(obj){
-  const allowed=new Set(["QUESTION","END","OBJECTION","MOTION","STATEMENT"]);
-  return {
-    kind:allowed.has(obj?.kind)?obj.kind:"STATEMENT",
-    target:typeof obj?.target==="string"?obj.target:null,
-    answer:typeof obj?.answer==="string"?obj.answer.slice(0,4000):"",
-    judgeReaction:typeof obj?.judgeReaction==="string"?obj.judgeReaction.slice(0,2500):"",
-    continueStage:obj?.continueStage!==false
-  };
+function languageRule(l){
+ if(l==="ru") return "Отвечай ТОЛЬКО на русском языке. Даже если студент пишет на другом языке. Не изменяй факты, имена, даты и суммы.";
+ if(l==="en") return "Respond ONLY in English, even if the student writes in another language. Never alter case facts, names, dates or amounts.";
+ return "FAQAT o‘zbek tilida lotin yozuvida javob ber. Talaba boshqa tilda yozsa ham javob o‘zbekcha bo‘lsin. Fakt, ism, sana va summalarni o‘zgartirma.";
 }
 
-app.get("/api/health",(req,res)=>{
-  res.json({
-    ok:true,
-    engine:"Huquqiy AI Gemini Court Engine V8",
-    provider:"Google Gemini",
-    model,
-    keyConfigured:Boolean(process.env.GEMINI_API_KEY)
-  });
-});
+function fallback(l,a){
+ const x={
+  uz:{end:"Boshqa savolim yo‘q.",endj:"Sud buni qayd etib, jarayonni davom ettiradi.",obj:"E’tiroz ko‘rib chiqish uchun qabul qilindi.",objj:"Sud e’tirozning aniq protsessual asosini ko‘rsatishni so‘raydi.",mot:"Iltimosnoma qabul qilindi.",motj:"Sud boshqa ishtirokchilarning fikrini eshitadi.",ans:"Javob faqat kazusdagi mavjud fakt va dalillar asosida berilishi mumkin.",judge:"Sud ish materiallari doirasida davom etishni so‘raydi."},
+  ru:{end:"У меня больше нет вопросов.",endj:"Суд принимает это к сведению и продолжает процесс.",obj:"Возражение принято к рассмотрению.",objj:"Суд просит указать конкретное процессуальное основание.",mot:"Ходатайство принято.",motj:"Суд выслушает мнение других участников.",ans:"Ответ может основываться только на имеющихся фактах и доказательствах дела.",judge:"Суд просит продолжить в пределах материалов дела."},
+  en:{end:"I have no further questions.",endj:"The court notes this and proceeds.",obj:"The objection is taken under consideration.",objj:"The court asks for the specific procedural basis.",mot:"The motion is received.",motj:"The court will hear the other participants.",ans:"The response may rely only on the facts and evidence contained in the case.",judge:"The court asks the participant to remain within the case record."}
+ }[l];
+ if(a==="END")return{kind:"END",target:null,answer:x.end,judgeReaction:x.endj,continueStage:false};
+ if(a==="OBJECTION")return{kind:"OBJECTION",target:"Sudya",answer:x.obj,judgeReaction:x.objj,continueStage:true};
+ if(a==="MOTION")return{kind:"MOTION",target:"Sudya",answer:x.mot,judgeReaction:x.motj,continueStage:true};
+ return{kind:a,target:null,answer:x.ans,judgeReaction:x.judge,continueStage:true};
+}
 
-app.post("/api/court-turn",async(req,res)=>{
-  try{
-    if(!process.env.GEMINI_API_KEY){
-      return res.status(503).json({error:"GEMINI_API_KEY sozlanmagan"});
-    }
-
-    const body=req.body||{};
-    const c=body.caseData||{};
-    const people=c.people||{};
-    const memory=Array.isArray(body.memory)?body.memory.slice(-12):[];
-
-    const systemInstruction=`
-Siz O'zbekiston sud jarayonini o'rgatuvchi HUQUQIY AI COURT ENGINE'siz.
-Bu o'quv sud simulyatsiyasi. Talaba erkin savol, e'tiroz, iltimosnoma yoki bayonot yozadi.
-TIL QOIDASI: request ichidagi language tanlangan interfeys tilidir. language=uz bo'lsa FAQAT o'zbekcha; language=ru bo'lsa FAQAT ruscha; language=en bo'lsa FAQAT inglizcha javob ber. Talaba boshqa tilda yozsa ham javob tanlangan interfeys tilida bo'lsin.
+function mem(s){
+ return s.turns.slice(-12).map((t,i)=>`${i+1}. Talaba: ${t.student}\nJavob: ${t.answer}\nSudya: ${t.judgeReaction||"-"}`).join("\n\n")||"Oldingi dialog yo‘q.";
+}
+function people(p){
+ if(!p||typeof p!=="object")return "Ko‘rsatilmagan";
+ return Object.entries(p).map(([k,v])=>`${txt(k,100)}: ${txt(v,300)}`).join("\n");
+}
+function caseData(b){
+ const c=b.caseData||{};
+ return{title:txt(c.title,500),facts:txt(c.facts,20000),evidence:txt(c.evidenceDossier,20000),people:c.people||{}};
+}
+function systemPrompt(l){return `SEN HUQUQIY AI PROFESSIONAL SUD SIMULYATORINING DINAMIK SUD DVIGATELISAN.
+Bu o‘quv simulyatsiyasi.
+${languageRule(l)}
 
 QAT'IY QOIDALAR:
-1. Faqat berilgan KAZUS, DALILLAR, ISHTIROKCHILAR va SUHBAT XOTIRASI doirasida ishlang.
-2. Yangi fakt, yangi dalil, yangi guvoh yoki yangi ekspertiza to'qimang.
-3. Har bir shaxs o'z rolidan chiqmasin. Guvoh faqat bevosita bilganini, ekspert faqat ekspertiza doirasidagini aytsin.
-4. Fakt yetarli bo'lmasa tabiiy ravishda bilmasligini aytsin.
-5. Oldingi javoblarni eslang. Kazusda mavjud bo'lmasa tasodifiy ziddiyat yaratmang.
-6. Talaba ziddiyatni ko'rsatsa aynan o'sha ziddiyatga javob bering.
-7. "Boshqa savolim yo'q" mazmunida bo'lsa kind=END.
-8. E'tiroz bo'lsa kind=OBJECTION; iltimosnoma bo'lsa kind=MOTION.
-9. Savol bo'lsa kind=QUESTION va target kim javob berishini ko'rsating.
-10. Oddiy protsessual bayonot bo'lsa kind=STATEMENT.
-11. Yashirin huquqiy masalalarni sud davomida talabaga hint qilib oshkor qilmang.
-12. Sud zalidagi tabiiy, professional va qisqa nutqdan foydalaning.
-13. Faqat belgilangan JSON strukturada javob bering.`;
+1. Faqat yuborilgan CASE FACTS, EVIDENCE, PEOPLE va MEMORYdan foydalan.
+2. Yangi fakt, dalil, guvoh, ekspertiza, sana, hujjat, audio/video yoki alibi o‘ylab topma.
+3. Talabaning fikri sud ishtirokchilarining reaksiyasini o‘zgartirishi mumkin, ammo tarixiy faktlarni o‘zgartirmaydi.
+4. Guvoh faqat o‘zi biladigan holat haqida gapiradi; bilmasa, bilmasligini aytadi.
+5. Ekspert faqat xulosa doirasida javob beradi va aybdorlik bo‘yicha hukm chiqarmaydi.
+6. Sudya neytral bo‘ladi va talabaning o‘rniga ishni hal qilmaydi.
+7. Prokuror va himoyachi bir xil faktlarni turlicha huquqiy talqin qilishi mumkin.
+8. Oldingi MEMORYni eslab qol va asossiz ravishda oldingi javobga zid gapirma.
+9. Talabaga yashirin huquqiy muammolarni sud davomida tayyor hint sifatida aytma.
+10. Savolga sud zalidagi tabiiy, professional va qisqa nutq bilan javob ber.
+11. "Boshqa savolim yo‘q" bo‘lsa END; e'tiroz bo‘lsa OBJECTION; iltimosnoma bo‘lsa MOTION; savol bo‘lsa QUESTION; fikr/pozitsiya bo‘lsa STATEMENT.
+12. FAQAT JSON qaytar.
 
-    const input=`
-TANLANGAN TIL: ${safeText(body.language||"uz",10)}
-YO'NALISH: ${safeText(body.direction,100)}
-TALABA ROLI: ${safeText(body.role,100)}
-JORIY BOSQICH: ${safeText(body.stage,300)}
-SUD SAVOLI/PROMPT: ${safeText(body.prompt,1000)}
+{"kind":"QUESTION|END|OBJECTION|MOTION|STATEMENT","target":"Sudlanuvchi|Guvoh|Jabrlanuvchi|Ekspert|Sudya|Prokuror|Himoyachi|null","answer":"...","judgeReaction":"...","continueStage":true}`}
 
-KAZUS NOMI:
-${safeText(c.title,500)}
+function parseJSON(raw){
+ raw=txt(raw,20000);
+ try{return JSON.parse(raw)}catch{}
+ const f=raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if(f){try{return JSON.parse(f[1])}catch{}}
+ const a=raw.indexOf("{"),z=raw.lastIndexOf("}"); if(a>=0&&z>a)return JSON.parse(raw.slice(a,z+1));
+ throw new Error("Gemini JSON qaytarmadi");
+}
 
-KAZUS FAKTLARI:
-${safeText(c.facts)}
+async function courtTurn(b){
+ const l=lang(b.language), s=session(b.sessionId), q=txt(b.question||b.prompt,6000), a=action(q), c=caseData(b);
+ if(!q) throw new Error("Savol yoki pozitsiya kiritilmagan");
+ if(!ai)return{...fallback(l,a),provider:"local-fallback",language:l,warning:"GEMINI_API_KEY is not configured"};
 
-DALILLAR:
-${safeText(c.evidenceDossier,12000)}
+ const prompt=`LANGUAGE: ${l}
+DIRECTION: ${txt(b.direction,100)}
+CASE INDEX: ${txt(b.caseIndex,20)}
+STUDENT ROLE: ${txt(b.role,100)}
+STAGE: ${txt(b.stage,100)}
+ACTION: ${a}
 
-ISHTIROKCHILAR:
-${JSON.stringify(people).slice(0,5000)}
+CASE TITLE:
+${c.title}
 
-OLDINGI SAVOL-JAVOBLAR:
-${JSON.stringify(memory).slice(0,12000)}
+CASE FACTS:
+${c.facts}
 
-TALABANING HOZIRGI GAPI:
-${safeText(body.question,4000)}
-`;
+EVIDENCE:
+${c.evidence}
 
-    const response=await ai.models.generateContent({
-      model,
-      contents:input,
-      config:{
-        systemInstruction,
-        responseMimeType:"application/json",
-        responseSchema:{
-          type:"object",
-          properties:{
-            kind:{type:"string",enum:["QUESTION","END","OBJECTION","MOTION","STATEMENT"]},
-            target:{type:["string","null"]},
-            answer:{type:"string"},
-            judgeReaction:{type:"string"},
-            continueStage:{type:"boolean"}
-          },
-          required:["kind","answer","continueStage"]
-        },
-        temperature:0.35,
-        maxOutputTokens:700
-      }
-    });
+PEOPLE:
+${people(c.people)}
 
-    const raw=(response.text||"").trim();
-    let parsed;
-    try{
-      parsed=JSON.parse(raw);
-    }catch{
-      return res.status(502).json({error:"Gemini JSON formatida javob bermadi",raw:raw.slice(0,1000)});
-    }
-    res.json(normalizeResult(parsed));
-  }catch(error){
-    console.error(error);
-    res.status(500).json({error:"Gemini Court Engine xatosi",detail:error?.message||String(error)});
-  }
+MEMORY:
+${mem(s)}
+
+STUDENT:
+${q}
+
+Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
+
+ const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{systemInstruction:systemPrompt(l),temperature:0.35,responseMimeType:"application/json"}});
+ const o=parseJSON(r.text);
+ const result={
+  kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
+  target:o.target==null?null:txt(o.target,100),
+  answer:txt(o.answer,6000),
+  judgeReaction:txt(o.judgeReaction,6000),
+  continueStage:typeof o.continueStage==="boolean"?o.continueStage:a!=="END"
+ };
+ if(!result.answer)Object.assign(result,fallback(l,a));
+ remember(s,{at:new Date().toISOString(),student:q,answer:result.answer,judgeReaction:result.judgeReaction,kind:result.kind,stage:txt(b.stage,100)});
+ return{...result,provider:"gemini",model:GEMINI_MODEL,language:l,memoryTurns:s.turns.length};
+}
+
+app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V9",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
+
+app.post("/api/court-turn",async(req,res)=>{
+ try{res.json({ok:true,...await courtTurn(req.body||{})})}
+ catch(e){
+  console.error("COURT_TURN_ERROR:",e?.message||e);
+  const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
+  res.json({ok:true,...fallback(l,a),provider:"local-fallback",language:l,error:txt(e?.message||"Court engine error",500)});
+ }
 });
 
-app.get("*",(req,res)=>{
-  res.sendFile(path.join(__dirname,"public","index.html"));
+app.post("/api/session/reset",(req,res)=>{
+ const id=txt(req.body?.sessionId,100); if(id)sessions.delete(id);
+ res.json({ok:true,sessionId:id||null});
 });
 
-app.listen(port,"0.0.0.0",()=>{
-  console.log(`Huquqiy AI Gemini Court Engine V8 port ${port} da ishlamoqda`);
+app.get("/api/session/:sessionId",(req,res)=>{
+ const id=txt(req.params.sessionId,100),s=sessions.get(id);
+ if(!s)return res.status(404).json({ok:false,error:"Session not found"});
+ res.json({ok:true,sessionId:id,turns:s.turns});
+});
+
+/* EXPRESS 5 FIX: app.get("*") YO‘Q */
+app.use((req,res,next)=>{
+ if(req.path.startsWith("/api/"))return res.status(404).json({ok:false,error:"API route not found"});
+ if(req.method!=="GET")return next();
+ res.sendFile(path.join(__dirname,"public","index.html"));
+});
+
+app.use((err,req,res,next)=>{
+ console.error("SERVER_ERROR:",err);
+ if(res.headersSent)return next(err);
+ res.status(500).json({ok:false,error:"Internal server error"});
+});
+
+app.listen(PORT,"0.0.0.0",()=>{
+ console.log("HUQUQIY AI COURT ENGINE V9");
+ console.log("PORT:",PORT);
+ console.log("MODEL:",GEMINI_MODEL);
+ console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
+ console.log("EXPRESS 5 WILDCARD FIX: OK");
 });
