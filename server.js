@@ -168,68 +168,98 @@ app.get("/api/session/:sessionId",(req,res)=>{
 });
 
 
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+
+function localTestAnalysis({language,code,topic,score,answers}){
+ const l=lang(language);
+ const wrong=answers.filter(a=>a.isCorrect!==true);
+ const correct=answers.filter(a=>a.isCorrect===true);
+ const pct=Math.round((score/Math.max(answers.length,1))*100);
+ const rows=answers.map((a,i)=>{
+   const status=a.isCorrect===true?(l==="ru"?"ВЕРНО":l==="en"?"CORRECT":"TO‘G‘RI"):(l==="ru"?"ОШИБКА":l==="en"?"WRONG":"XATO");
+   const base=`${i+1}. ${status}\n${txt(a.question,450)}\n`;
+   if(a.isCorrect===true){
+     return base+(l==="ru"?`Ваш ответ: ${txt(a.student,220)}\nПояснение: ${txt(a.explanation,450)}\nОснование: ${txt(a.legalBasis,220)}`:
+       l==="en"?`Your answer: ${txt(a.student,220)}\nExplanation: ${txt(a.explanation,450)}\nLegal basis: ${txt(a.legalBasis,220)}`:
+       `Sizning javobingiz: ${txt(a.student,220)}\nIzoh: ${txt(a.explanation,450)}\nHuquqiy asos: ${txt(a.legalBasis,220)}`);
+   }
+   return base+(l==="ru"?`Ваш ответ: ${txt(a.student,220)}\nПравильный ответ: ${txt(a.correct,220)}\nПояснение: ${txt(a.explanation,450)}\nОснование: ${txt(a.legalBasis,220)}`:
+     l==="en"?`Your answer: ${txt(a.student,220)}\nCorrect answer: ${txt(a.correct,220)}\nExplanation: ${txt(a.explanation,450)}\nLegal basis: ${txt(a.legalBasis,220)}`:
+     `Sizning javobingiz: ${txt(a.student,220)}\nTo‘g‘ri javob: ${txt(a.correct,220)}\nIzoh: ${txt(a.explanation,450)}\nHuquqiy asos: ${txt(a.legalBasis,220)}`);
+ }).join("\n\n");
+
+ if(l==="ru") return `РЕЗУЛЬТАТ: ${score}/${answers.length} (${pct}%)\nВерных ответов: ${correct.length}. Ошибок: ${wrong.length}.\n\nАНАЛИЗ ВСЕХ ОТВЕТОВ\n${rows}\n\nСИЛЬНЫЕ СТОРОНЫ\nВы правильно ответили на ${correct.length} из ${answers.length} вопросов по теме «${topic}».\n\nСЛАБЫЕ СТОРОНЫ\n${wrong.length?`Повторите нормы и логику по ${wrong.length} ошибочным вопросам выше.`:"Существенных ошибок не выявлено; углубите понимание процессуальной логики и применения норм."}\n\nРЕКОМЕНДАЦИИ\n1. Повторите правовые основания каждого ошибочного ответа.\n2. Сопоставляйте вопрос с процессуальной стадией и полномочиями участников.\n3. Объясняйте, почему выбранный вариант верен, а остальные неверны.\n4. Повторно пройдите тему после изучения ошибок.\n\nПримечание: Gemini временно недоступен, поэтому показан резервный анализ на основе сохранённых ответов теста.`;
+
+ if(l==="en") return `RESULT: ${score}/${answers.length} (${pct}%)\nCorrect: ${correct.length}. Wrong: ${wrong.length}.\n\nALL ANSWERS ANALYSIS\n${rows}\n\nSTRENGTHS\nYou answered ${correct.length} of ${answers.length} questions correctly in “${topic}”.\n\nWEAKNESSES\n${wrong.length?`Review the rules and reasoning behind the ${wrong.length} incorrect answers above.`:"No material errors were found; deepen your understanding of procedural reasoning and application."}\n\nRECOMMENDATIONS\n1. Review the legal basis for every incorrect answer.\n2. Connect each question to the procedural stage and participant powers.\n3. Explain why the selected option is correct and why alternatives are not.\n4. Retake the topic after reviewing mistakes.\n\nNote: Gemini is temporarily unavailable, so this is a fallback analysis based on the stored test answers.`;
+
+ return `NATIJA: ${score}/${answers.length} (${pct}%)\nTo‘g‘ri javoblar: ${correct.length} ta. Xatolar: ${wrong.length} ta.\n\nBARCHA JAVOBLAR TAHLILI\n${rows}\n\nKUCHLI TOMONLAR\n“${topic}” mavzusida ${answers.length} savoldan ${correct.length} tasiga to‘g‘ri javob berdingiz.\n\nZAIF TOMONLAR\n${wrong.length?`Yuqoridagi ${wrong.length} ta xato savol bo‘yicha norma, protsessual bosqich va javob mantig‘ini qayta ko‘rib chiqing.`:"Jiddiy xato aniqlanmadi. Endi protsessual normalarni amaliy vaziyatga qo‘llashni chuqurlashtiring."}\n\nTAVSIYALAR\n1. Har bir xato javobning huquqiy asosini qayta o‘qing.\n2. Savolni protsessual bosqich va ishtirokchi vakolati bilan bog‘lang.\n3. Nega aynan shu variant to‘g‘ri, qolganlari noto‘g‘riligini izohlashga odatlaning.\n4. Xatolarni o‘rgangach mavzuni qayta ishlang.\n\nEslatma: Gemini vaqtincha band bo‘lgani uchun saqlangan test javoblari asosida zaxira tahlil ko‘rsatildi.`;
+}
+
 app.post("/api/test-analysis", async (req,res)=>{
-  try{
-    const l=lang(req.body?.language);
-    const code=txt(req.body?.code,30);
-    const topic=txt(req.body?.topic,300);
-    const score=Number(req.body?.score||0);
-    const answers=Array.isArray(req.body?.answers)?req.body.answers.slice(0,20):[];
+  const l=lang(req.body?.language);
+  const code=txt(req.body?.code,30);
+  const topic=txt(req.body?.topic,300);
+  const score=Number(req.body?.score||0);
+  const answers=Array.isArray(req.body?.answers)?req.body.answers.slice(0,20):[];
 
-    console.log("TEST_ANALYSIS_REQUEST:", {code,topic,score,answers:answers.length,model:GEMINI_MODEL,ai:!!ai});
+  if(!answers.length){
+    return res.status(400).json({ok:false,error:"Frontend test javoblarini serverga yubormadi."});
+  }
 
-    if(!answers.length){
-      return res.status(400).json({ok:false,error:"Frontend 20 ta javobni serverga yubormadi."});
-    }
-    if(!ai){
-      return res.status(503).json({ok:false,error:"Gemini client ishga tushmagan. GEMINI_API_KEY ni tekshiring."});
-    }
+  const fallback=()=>localTestAnalysis({language:l,code,topic,score,answers});
 
-    const compact=answers.map((a,i)=>[
-      `${i+1}. ${txt(a.question,500)}`,
-      `Talaba: ${txt(a.student,250)}`,
-      `To'g'ri: ${txt(a.correct,250)}`,
-      `Holat: ${a.isCorrect===true?"TO'G'RI":"XATO"}`,
-      `Izoh: ${txt(a.explanation,500)}`,
-      `Asos: ${txt(a.legalBasis,250)}`
-    ].join("\n")).join("\n\n");
+  if(!ai){
+    return res.json({ok:true,analysis:fallback(),provider:"local-fallback",model:null,score,total:answers.length});
+  }
 
-    const languageName=l==="ru"?"RUS TILIDA":l==="en"?"INGLIZ TILIDA":"O'ZBEK TILIDA";
-    const prompt=`${languageName} javob ber.
-Sen huquq talabasining protsessual test natijasini tahlil qilasan.
-Kodeks: ${code}
-Mavzu: ${topic}
-Natija: ${score}/20.
+  const compact=answers.map((a,i)=>[
+    `${i+1}. ${txt(a.question,500)}`,
+    `Talaba: ${txt(a.student,250)}`,
+    `To'g'ri: ${txt(a.correct,250)}`,
+    `Holat: ${a.isCorrect===true?"TO'G'RI":"XATO"}`,
+    `Izoh: ${txt(a.explanation,500)}`,
+    `Asos: ${txt(a.legalBasis,250)}`
+  ].join("\n")).join("\n\n");
 
-Quyidagi 20 javobning HAMMASINI tahlil qil.
-To'g'ri javoblarni ham izohla.
-Xato javoblarda xato sababini va to'g'ri javobni tushuntir.
-Faqat berilgan "To'g'ri", "Izoh" va "Asos" ma'lumotlariga tayan.
+  const languageName=l==="ru"?"RUS TILIDA":l==="en"?"INGLIZ TILIDA":"O'ZBEK TILIDA";
+  const prompt=`${languageName} javob ber.
+Huquq talabasining ${code} bo'yicha "${topic}" mavzusidagi testini tahlil qil.
+Natija: ${score}/${answers.length}.
+Barcha ${answers.length} javobni tahlil qil: TO'G'RI javoblarni ham, XATO javoblarni ham.
+Faqat quyida berilgan to'g'ri javob, izoh va huquqiy asosga tayan.
 Yangi modda raqami yoki norma o'ylab topma.
-Oxirida: KUCHLI TOMONLAR, XATOLAR/ZAIF TOMONLAR, 3-5 TA TAVSIYA ber.
+Oxirida KUCHLI TOMONLAR, ZAIF TOMONLAR va 3-5 TA AMALIY TAVSIYA ber.
 
 ${compact}`;
 
-    const response=await ai.interactions.create({
-      model:GEMINI_MODEL,
-      input:prompt
-    });
-
-    const analysis=String(response?.output_text||"").trim();
-    console.log("TEST_ANALYSIS_SUCCESS:", {chars:analysis.length});
-    if(!analysis){
-      return res.status(502).json({ok:false,error:"Gemini javob berdi, lekin matn bo'sh qaytdi.",provider:"gemini"});
+  let lastError="";
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      console.log(`TEST_ANALYSIS_GEMINI_ATTEMPT_${attempt}`,{model:GEMINI_MODEL,answers:answers.length});
+      const response=await ai.interactions.create({model:GEMINI_MODEL,input:prompt});
+      const analysis=String(response?.output_text||"").trim();
+      if(analysis){
+        return res.json({ok:true,analysis,provider:"gemini",model:GEMINI_MODEL,attempt,score,total:answers.length});
+      }
+      lastError="Gemini bo'sh javob qaytardi.";
+    }catch(e){
+      lastError=String(e?.message||e);
+      console.error(`TEST_ANALYSIS_ATTEMPT_${attempt}_ERROR`,lastError);
+      const temporary=/503|high demand|overload|temporar|unavailable|429|resource.exhausted/i.test(lastError);
+      if(!temporary) break;
+      if(attempt<3) await sleep(attempt*900);
     }
-    return res.json({ok:true,analysis,provider:"gemini",model:GEMINI_MODEL,score,total:answers.length});
-  }catch(e){
-    const msg=String(e?.message||e);
-    console.error("TEST_ANALYSIS_ERROR:",msg);
-    return res.status(500).json({
-      ok:false,
-      error:"Gemini test tahlili xatosi: "+msg.slice(0,700),
-      model:GEMINI_MODEL
-    });
   }
+
+  console.warn("TEST_ANALYSIS_FALLBACK_USED",lastError.slice(0,300));
+  return res.json({
+    ok:true,
+    analysis:fallback(),
+    provider:"local-fallback",
+    geminiError:lastError.slice(0,500),
+    model:GEMINI_MODEL,
+    score,total:answers.length
+  });
 });
 
 app.get("/api/test-analysis/health", async (req,res)=>{
@@ -258,7 +288,7 @@ app.use((err,req,res,next)=>{
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
 console.log("GEMINI API MODE: INTERACTIONS");
 app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V17 GEMINI 3.8");
+ console.log("HUQUQIY AI COURT ENGINE V19 RESILIENT");
  console.log("PORT:",PORT);
  console.log("MODEL:",GEMINI_MODEL);
  console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
