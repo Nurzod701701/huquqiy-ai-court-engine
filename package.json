@@ -1,0 +1,14 @@
+{
+  "name": "huquqiy-ai-court-engine",
+  "version": "8.0.0",
+  "type": "module",
+  "description": "Huquqiy AI Gemini Dynamic Court Engine",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "express": "^5.1.0"
+  }
+}
