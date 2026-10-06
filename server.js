@@ -167,46 +167,77 @@ app.get("/api/session/:sessionId",(req,res)=>{
 
 app.post("/api/test-analysis", async (req,res)=>{
   try{
-    const l=lang(req.body?.language), code=txt(req.body?.code,30), topic=txt(req.body?.topic,300);
+    const l=lang(req.body?.language);
+    const code=txt(req.body?.code,30);
+    const topic=txt(req.body?.topic,300);
     const score=Number(req.body?.score||0);
     const answers=Array.isArray(req.body?.answers)?req.body.answers.slice(0,20):[];
-    const mistakes=Array.isArray(req.body?.mistakes)?req.body.mistakes.slice(0,20):[];
-    if(!answers.length)return res.status(400).json({ok:false,error:"No test answers received"});
 
-    const stored=answers.map((a,i)=>`${i+1}) SAVOL: ${txt(a.question,1000)}
-TALABA JAVOBI: ${txt(a.student,500)}
-NATIJA: ${a.isCorrect ? "TO‘G‘RI" : "XATO"}
-BAZADAGI TO‘G‘RI JAVOB: ${txt(a.correct,500)}
-BAZADAGI IZOH: ${txt(a.explanation,1000)}
-HUQUQIY ASOS: ${txt(a.legalBasis,500)}`).join("\n\n");
+    console.log("TEST_ANALYSIS_REQUEST:", {code,topic,score,answers:answers.length,model:GEMINI_MODEL,ai:!!ai});
 
-    if(!ai)return res.json({ok:true,analysis:l==="ru"?"Gemini API kaliti sozlanmagan.":l==="en"?"Gemini API key is not configured.":"Gemini API kaliti sozlanmagan.",provider:"local-fallback"});
+    if(!answers.length){
+      return res.status(400).json({ok:false,error:"Frontend 20 ta javobni serverga yubormadi."});
+    }
+    if(!ai){
+      return res.status(503).json({ok:false,error:"Gemini client ishga tushmagan. GEMINI_API_KEY ni tekshiring."});
+    }
 
-    const prompt=`SEN HUQUQIY AI PROFESSIONAL TEST TAHLILCHISISAN.
-${languageRule(l)}
+    const compact=answers.map((a,i)=>[
+      `${i+1}. ${txt(a.question,500)}`,
+      `Talaba: ${txt(a.student,250)}`,
+      `To'g'ri: ${txt(a.correct,250)}`,
+      `Holat: ${a.isCorrect===true?"TO'G'RI":"XATO"}`,
+      `Izoh: ${txt(a.explanation,500)}`,
+      `Asos: ${txt(a.legalBasis,250)}`
+    ].join("\n")).join("\n\n");
+
+    const languageName=l==="ru"?"RUS TILIDA":l==="en"?"INGLIZ TILIDA":"O'ZBEK TILIDA";
+    const prompt=`${languageName} javob ber.
+Sen huquq talabasining protsessual test natijasini tahlil qilasan.
 Kodeks: ${code}
 Mavzu: ${topic}
-Natija: ${score}/20
-Xatolar: ${mistakes.length}
+Natija: ${score}/20.
 
-20 TA JAVOBNING HAMMASINI TAHLIL QIL.
-1) Avval umumiy bilim darajasini bahola.
-2) TO‘G‘RI javoblarni ham tahlil qil va nima uchun to‘g‘ri ekanini qisqa tushuntir.
-3) XATO javoblarda talaba javobi, to‘g‘ri javob va xato sababini tushuntir.
-4) Faqat bazadagi to‘g‘ri javob, izoh va huquqiy asosga tayan.
-5) Yangi modda raqami yoki huquqiy norma o‘ylab topma.
-6) Kuchli va zaif mavzularni ajrat.
-7) Yakunda 3-5 ta aniq o‘qish tavsiyasi ber.
-8) 20/20 bo‘lsa ham tahlilni davom ettir.
+Quyidagi 20 javobning HAMMASINI tahlil qil.
+To'g'ri javoblarni ham izohla.
+Xato javoblarda xato sababini va to'g'ri javobni tushuntir.
+Faqat berilgan "To'g'ri", "Izoh" va "Asos" ma'lumotlariga tayan.
+Yangi modda raqami yoki norma o'ylab topma.
+Oxirida: KUCHLI TOMONLAR, XATOLAR/ZAIF TOMONLAR, 3-5 TA TAVSIYA ber.
 
-JAVOBLAR:
-${stored}`;
-    const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{temperature:0.2}});
-    res.json({ok:true,analysis:txt(r.text,16000),provider:"gemini",language:l,score,total:answers.length});
+${compact}`;
+
+    const response=await ai.models.generateContent({
+      model:GEMINI_MODEL,
+      contents:prompt,
+      config:{temperature:0.15}
+    });
+
+    const analysis=String(response?.text||"").trim();
+    console.log("TEST_ANALYSIS_SUCCESS:", {chars:analysis.length});
+    if(!analysis){
+      return res.status(502).json({ok:false,error:"Gemini javob berdi, lekin matn bo'sh qaytdi.",provider:"gemini"});
+    }
+    return res.json({ok:true,analysis,provider:"gemini",model:GEMINI_MODEL,score,total:answers.length});
   }catch(e){
-    console.error("TEST_ANALYSIS_ERROR:",e?.message||e);
-    res.status(500).json({ok:false,error:"Test analysis failed"});
+    const msg=String(e?.message||e);
+    console.error("TEST_ANALYSIS_ERROR:",msg);
+    return res.status(500).json({
+      ok:false,
+      error:"Gemini test tahlili xatosi: "+msg.slice(0,700),
+      model:GEMINI_MODEL
+    });
   }
+});
+
+app.get("/api/test-analysis/health", async (req,res)=>{
+  res.json({
+    ok:true,
+    route:"/api/test-analysis",
+    geminiConfigured:!!process.env.GEMINI_API_KEY,
+    clientReady:!!ai,
+    model:GEMINI_MODEL
+  });
 });
 
 /* EXPRESS 5 FIX: app.get("*") YO‘Q */
@@ -222,8 +253,9 @@ app.use((err,req,res,next)=>{
  res.status(500).json({ok:false,error:"Internal server error"});
 });
 
+console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
 app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V9");
+ console.log("HUQUQIY AI COURT ENGINE V16 FINAL");
  console.log("PORT:",PORT);
  console.log("MODEL:",GEMINI_MODEL);
  console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
