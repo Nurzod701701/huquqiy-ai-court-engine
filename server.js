@@ -1,232 +1,5654 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import { GoogleGenAI } from "@google/genai";
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Huquqiy AI — Sud Simulyatori</title>
 
-const app = express();
-const PORT = Number(process.env.PORT || 10000);
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+<style>
+*{box-sizing:border-box}
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
-
-app.disable("x-powered-by");
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "public")));
-
-const sessions = new Map();
-const MAX_TURNS = 30;
-
-function txt(v, n=10000){ return String(v ?? "").replace(/\0/g,"").trim().slice(0,n); }
-function lang(v){ v=txt(v,10).toLowerCase(); return v==="ru"?"ru":v==="en"?"en":"uz"; }
-
-function session(id){
-  id=txt(id,100)||"anonymous";
-  if(!sessions.has(id)) sessions.set(id,{createdAt:Date.now(),turns:[]});
-  return sessions.get(id);
-}
-function remember(s,t){ s.turns.push(t); if(s.turns.length>MAX_TURNS)s.turns=s.turns.slice(-MAX_TURNS); }
-
-function action(q){
-  const t=txt(q,5000).toLowerCase();
-  if(t.includes("e'tiroz")||t.includes("e’tiroz")||t.includes("возраж")||t.includes("objection")) return "OBJECTION";
-  if(t.includes("iltimosnoma")||t.includes("ходатай")||t.includes("motion")) return "MOTION";
-  if(t.includes("savolim yo'q")||t.includes("savolim yo‘q")||t.includes("вопросов нет")||t.includes("no further questions")) return "END";
-  if(t.includes("?")) return "QUESTION";
-  return "STATEMENT";
+body{
+  margin:0;
+  font-family:Arial,sans-serif;
+  background:#f3f6f9;
+  color:#172033;
 }
 
-function languageRule(l){
- if(l==="ru") return "Отвечай ТОЛЬКО на русском языке. Даже если студент пишет на другом языке. Не изменяй факты, имена, даты и суммы.";
- if(l==="en") return "Respond ONLY in English, even if the student writes in another language. Never alter case facts, names, dates or amounts.";
- return "FAQAT o‘zbek tilida lotin yozuvida javob ber. Talaba boshqa tilda yozsa ham javob o‘zbekcha bo‘lsin. Fakt, ism, sana va summalarni o‘zgartirma.";
+header{
+  background:#214C3D;
+  color:white;
+  padding:22px 30px;
 }
 
-function fallback(l,a){
- const x={
-  uz:{end:"Boshqa savolim yo‘q.",endj:"Sud buni qayd etib, jarayonni davom ettiradi.",obj:"E’tiroz ko‘rib chiqish uchun qabul qilindi.",objj:"Sud e’tirozning aniq protsessual asosini ko‘rsatishni so‘raydi.",mot:"Iltimosnoma qabul qilindi.",motj:"Sud boshqa ishtirokchilarning fikrini eshitadi.",ans:"Javob faqat kazusdagi mavjud fakt va dalillar asosida berilishi mumkin.",judge:"Sud ish materiallari doirasida davom etishni so‘raydi."},
-  ru:{end:"У меня больше нет вопросов.",endj:"Суд принимает это к сведению и продолжает процесс.",obj:"Возражение принято к рассмотрению.",objj:"Суд просит указать конкретное процессуальное основание.",mot:"Ходатайство принято.",motj:"Суд выслушает мнение других участников.",ans:"Ответ может основываться только на имеющихся фактах и доказательствах дела.",judge:"Суд просит продолжить в пределах материалов дела."},
-  en:{end:"I have no further questions.",endj:"The court notes this and proceeds.",obj:"The objection is taken under consideration.",objj:"The court asks for the specific procedural basis.",mot:"The motion is received.",motj:"The court will hear the other participants.",ans:"The response may rely only on the facts and evidence contained in the case.",judge:"The court asks the participant to remain within the case record."}
- }[l];
- if(a==="END")return{kind:"END",target:null,answer:x.end,judgeReaction:x.endj,continueStage:false};
- if(a==="OBJECTION")return{kind:"OBJECTION",target:"Sudya",answer:x.obj,judgeReaction:x.objj,continueStage:true};
- if(a==="MOTION")return{kind:"MOTION",target:"Sudya",answer:x.mot,judgeReaction:x.motj,continueStage:true};
- return{kind:a,target:null,answer:x.ans,judgeReaction:x.judge,continueStage:true};
+header h1{margin:0 0 6px}
+
+.container{
+  max-width:1180px;
+  margin:30px auto;
+  padding:0 20px;
 }
 
-function mem(s){
- return s.turns.slice(-12).map((t,i)=>`${i+1}. Talaba: ${t.student}\nJavob: ${t.answer}\nSudya: ${t.judgeReaction||"-"}`).join("\n\n")||"Oldingi dialog yo‘q.";
-}
-function people(p){
- if(!p||typeof p!=="object")return "Ko‘rsatilmagan";
- return Object.entries(p).map(([k,v])=>`${txt(k,100)}: ${txt(v,300)}`).join("\n");
-}
-function caseData(b){
- const c=b.caseData||{};
- return{title:txt(c.title,500),facts:txt(c.facts,20000),evidence:txt(c.evidenceDossier,20000),people:c.people||{}};
-}
-function systemPrompt(l){return `SEN HUQUQIY AI PROFESSIONAL SUD SIMULYATORINING DINAMIK SUD DVIGATELISAN.
-Bu o‘quv simulyatsiyasi.
-${languageRule(l)}
-
-QAT'IY QOIDALAR:
-1. Faqat yuborilgan CASE FACTS, EVIDENCE, PEOPLE va MEMORYdan foydalan.
-2. Yangi fakt, dalil, guvoh, ekspertiza, sana, hujjat, audio/video yoki alibi o‘ylab topma.
-3. Talabaning fikri sud ishtirokchilarining reaksiyasini o‘zgartirishi mumkin, ammo tarixiy faktlarni o‘zgartirmaydi.
-4. Guvoh faqat o‘zi biladigan holat haqida gapiradi; bilmasa, bilmasligini aytadi.
-5. Ekspert faqat xulosa doirasida javob beradi va aybdorlik bo‘yicha hukm chiqarmaydi.
-6. Sudya neytral bo‘ladi va talabaning o‘rniga ishni hal qilmaydi.
-7. Prokuror va himoyachi bir xil faktlarni turlicha huquqiy talqin qilishi mumkin.
-8. Oldingi MEMORYni eslab qol va asossiz ravishda oldingi javobga zid gapirma.
-9. Talabaga yashirin huquqiy muammolarni sud davomida tayyor hint sifatida aytma.
-10. Savolga sud zalidagi tabiiy, professional va qisqa nutq bilan javob ber.
-11. "Boshqa savolim yo‘q" bo‘lsa END; e'tiroz bo‘lsa OBJECTION; iltimosnoma bo‘lsa MOTION; savol bo‘lsa QUESTION; fikr/pozitsiya bo‘lsa STATEMENT.
-12. FAQAT JSON qaytar.
-
-{"kind":"QUESTION|END|OBJECTION|MOTION|STATEMENT","target":"Sudlanuvchi|Guvoh|Jabrlanuvchi|Ekspert|Sudya|Prokuror|Himoyachi|null","answer":"...","judgeReaction":"...","continueStage":true}`}
-
-function parseJSON(raw){
- raw=txt(raw,20000);
- try{return JSON.parse(raw)}catch{}
- const f=raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if(f){try{return JSON.parse(f[1])}catch{}}
- const a=raw.indexOf("{"),z=raw.lastIndexOf("}"); if(a>=0&&z>a)return JSON.parse(raw.slice(a,z+1));
- throw new Error("Gemini JSON qaytarmadi");
+.card{
+  background:white;
+  padding:25px;
+  border-radius:16px;
+  box-shadow:0 5px 20px #00000012;
+  margin-bottom:20px;
 }
 
-async function courtTurn(b){
- const l=lang(b.language), s=session(b.sessionId), q=txt(b.question||b.prompt,6000), a=action(q), c=caseData(b);
- if(!q) throw new Error("Savol yoki pozitsiya kiritilmagan");
- if(!ai)return{...fallback(l,a),provider:"local-fallback",language:l,warning:"GEMINI_API_KEY is not configured"};
+.hidden{display:none!important}
 
- const prompt=`LANGUAGE: ${l}
-DIRECTION: ${txt(b.direction,100)}
-CASE INDEX: ${txt(b.caseIndex,20)}
-STUDENT ROLE: ${txt(b.role,100)}
-STAGE: ${txt(b.stage,100)}
-ACTION: ${a}
-
-CASE TITLE:
-${c.title}
-
-CASE FACTS:
-${c.facts}
-
-EVIDENCE:
-${c.evidence}
-
-PEOPLE:
-${people(c.people)}
-
-MEMORY:
-${mem(s)}
-
-STUDENT:
-${q}
-
-Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
-
- const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{systemInstruction:systemPrompt(l),temperature:0.35,responseMimeType:"application/json"}});
- const o=parseJSON(r.text);
- const result={
-  kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
-  target:o.target==null?null:txt(o.target,100),
-  answer:txt(o.answer,6000),
-  judgeReaction:txt(o.judgeReaction,6000),
-  continueStage:typeof o.continueStage==="boolean"?o.continueStage:a!=="END"
- };
- if(!result.answer)Object.assign(result,fallback(l,a));
- remember(s,{at:new Date().toISOString(),student:q,answer:result.answer,judgeReaction:result.judgeReaction,kind:result.kind,stage:txt(b.stage,100)});
- return{...result,provider:"gemini",model:GEMINI_MODEL,language:l,memoryTurns:s.turns.length};
+.grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:15px;
 }
 
-app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V9",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
+.item{
+  border:2px solid #e1e7ed;
+  border-radius:14px;
+  padding:22px;
+  cursor:pointer;
+  background:white;
+  transition:.2s;
+}
 
-app.post("/api/court-turn",async(req,res)=>{
- try{res.json({ok:true,...await courtTurn(req.body||{})})}
- catch(e){
-  console.error("COURT_TURN_ERROR:",e?.message||e);
-  const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
-  res.json({ok:true,...fallback(l,a),provider:"local-fallback",language:l,error:txt(e?.message||"Court engine error",500)});
- }
-});
+.item:hover{
+  border-color:#214C3D;
+  transform:translateY(-2px);
+}
 
-app.post("/api/session/reset",(req,res)=>{
- const id=txt(req.body?.sessionId,100); if(id)sessions.delete(id);
- res.json({ok:true,sessionId:id||null});
-});
+.item h3{
+  color:#214C3D;
+  margin:8px 0;
+}
 
-app.get("/api/session/:sessionId",(req,res)=>{
- const id=txt(req.params.sessionId,100),s=sessions.get(id);
- if(!s)return res.status(404).json({ok:false,error:"Session not found"});
- res.json({ok:true,sessionId:id,turns:s.turns});
-});
+.icon{font-size:36px}
 
+button{
+  padding:13px 20px;
+  border:0;
+  border-radius:10px;
+  cursor:pointer;
+  font-size:16px;
+}
 
-app.post("/api/test-analysis", async (req,res)=>{
-  try{
-    const l=lang(req.body?.language);
-    const code=txt(req.body?.code,30);
-    const topic=txt(req.body?.topic,300);
-    const score=Number(req.body?.score||0);
-    const mistakes=Array.isArray(req.body?.mistakes)?req.body.mistakes.slice(0,20):[];
-    if(!mistakes.length){
-      const perfect=l==="ru"?"Ошибок нет. Отличный результат.":l==="en"?"No mistakes. Excellent result.":"Xato yo‘q. A’lo natija.";
-      return res.json({ok:true,analysis:perfect});
-    }
-    const stored=mistakes.map((m,i)=>`${i+1}) SAVOL: ${txt(m.question,1000)}
-TALABA JAVOBI: ${txt(m.student,500)}
-BAZADAGI TO‘G‘RI JAVOB: ${txt(m.correct,500)}
-BAZADAGI IZOH: ${txt(m.explanation,1000)}
-HUQUQIY ASOS YO‘NALISHI: ${txt(m.legalBasis,500)}`).join("\n\n");
-    if(!ai){
-      const local=l==="ru"?"Gemini API kaliti sozlanmagan. Xatolar yuqoridagi bazaviy izohlar bo‘yicha ko‘rsatildi.":l==="en"?"Gemini API key is not configured. Review the stored explanations above.":"Gemini API kaliti sozlanmagan. Yuqoridagi bazaviy tushuntirishlarni qayta ko‘rib chiqing.";
-      return res.json({ok:true,analysis:local,provider:"local-fallback"});
-    }
-    const prompt=`SEN HUQUQIY AI TEST TAHLILCHISISAN.
-${languageRule(l)}
-Kodeks: ${code}
-Mavzu: ${topic}
-Natija: ${score}/20
+.back{
+  background:#e5e7eb;
+  margin-bottom:15px;
+}
 
-QAT'IY QOIDA:
-- To‘g‘ri javobni o‘zing qayta ixtiro qilma.
-- Faqat quyida server bazasidan berilgan TO‘G‘RI JAVOB va IZOHga tayangan holda talabaning xatosini tahlil qil.
-- Yangi modda raqamini o‘ylab topma.
-- Talabaning asosiy zaif mavzularini guruhla.
-- Har xatoni takrorlab cho‘zma; professional va tushunarli tahlil ber.
-- Yakunda 3-5 ta aniq o‘qish tavsiyasi ber.
+.primary{
+  background:#214C3D;
+  color:white;
+  font-weight:bold;
+}
 
-XATOLAR:
-${stored}`;
-    const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{temperature:0.25}});
-    res.json({ok:true,analysis:txt(r.text,12000),provider:"gemini",language:l});
-  }catch(e){
-    console.error("TEST_ANALYSIS_ERROR:",e?.message||e);
-    res.status(500).json({ok:false,error:"Test analysis failed"});
+.full{
+  width:100%;
+  margin-top:15px;
+}
+
+.roles{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+}
+
+.role{
+  padding:15px;
+  border:2px solid #e1e7ed;
+  border-radius:10px;
+  text-align:center;
+  cursor:pointer;
+}
+
+.role:hover{border-color:#214C3D}
+
+.role.selected{
+  background:#214C3D;
+  color:white;
+  border-color:#214C3D;
+}
+
+.caseText{
+  background:#f8fafc;
+  padding:20px;
+  border-radius:10px;
+  border-left:5px solid #214C3D;
+  line-height:1.7;
+  white-space:pre-line;
+}
+
+.privateInfo{
+  background:#fff7ed;
+  padding:18px;
+  border-radius:10px;
+  border-left:5px solid #ea580c;
+  line-height:1.7;
+  white-space:pre-line;
+  margin-top:15px;
+}
+
+.participants{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+.chip{
+  background:#edf4fa;
+  border:1px solid #d7e3ed;
+  padding:8px 12px;
+  border-radius:20px;
+  font-size:14px;
+}
+
+.timer{
+  text-align:center;
+  font-size:48px;
+  font-weight:bold;
+  color:#214C3D;
+  margin:20px;
+}
+
+.info{
+  background:#eff6ff;
+  padding:14px;
+  border-radius:10px;
+  margin-bottom:12px;
+}
+
+.stage{
+  background:#eaf3ff;
+  border-left:5px solid #2563eb;
+  padding:14px;
+  border-radius:10px;
+  font-weight:bold;
+  margin-bottom:10px;
+}
+
+.turn{
+  background:#fff7d6;
+  border:1px solid #f2cf58;
+  padding:13px;
+  border-radius:10px;
+  margin-bottom:12px;
+  font-weight:bold;
+}
+
+.chat{
+  height:480px;
+  overflow:auto;
+  background:#f8fafc;
+  border:1px solid #ddd;
+  border-radius:12px;
+  padding:15px;
+}
+
+.message{
+  padding:13px;
+  margin:10px 0;
+  border-radius:10px;
+  max-width:86%;
+  line-height:1.55;
+}
+
+.message b{
+  display:block;
+  margin-bottom:5px;
+}
+
+.judge{
+  background:#e7eef6;
+  border-left:4px solid #214C3D;
+}
+
+.clerk{
+  background:#f3e8ff;
+  border-left:4px solid #7e22ce;
+}
+
+.prosecutor{
+  background:#fee2e2;
+  border-left:4px solid #b91c1c;
+}
+
+.defense{
+  background:#e0f2fe;
+  border-left:4px solid #0369a1;
+}
+
+.victim{
+  background:#fff1f2;
+  border-left:4px solid #be123c;
+}
+
+.witness{
+  background:#f3f4f6;
+  border-left:4px solid #4b5563;
+}
+
+.party{
+  background:#fef3c7;
+  border-left:4px solid #a16207;
+}
+
+.student{
+  background:#dcfce7;
+  border-left:4px solid #15803d;
+  margin-left:auto;
+}
+
+.system{
+  background:#f1f5f9;
+  border-left:4px solid #64748b;
+}
+
+textarea{
+  width:100%;
+  min-height:100px;
+  padding:14px;
+  border:1px solid #ccc;
+  border-radius:10px;
+  font-size:16px;
+  margin-top:15px;
+}
+
+.send{
+  width:100%;
+  background:#15803d;
+  color:white;
+  margin-top:10px;
+  font-weight:bold;
+}
+
+.judgeActions{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:10px;
+  margin-top:12px;
+}
+
+.judgeAction{
+  background:#214C3D;
+  color:white;
+}
+
+.score{
+  text-align:center;
+  font-size:58px;
+  font-weight:bold;
+  color:#214C3D;
+}
+
+.scoreGrid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:12px;
+}
+
+.scoreBox{
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+  border-radius:12px;
+  padding:16px;
+}
+
+.feedback{
+  padding:18px;
+  border-radius:12px;
+  margin-top:15px;
+  line-height:1.7;
+}
+
+.better{
+  background:#ecfdf5;
+  border-left:5px solid #16a34a;
+}
+
+.law{
+  background:#eff6ff;
+  border-left:5px solid #2563eb;
+}
+
+.warning{
+  background:#fff7ed;
+  border-left:5px solid #ea580c;
+}
+
+.muted{
+  color:#64748b;
+  font-size:14px;
+}
+
+@media(max-width:750px){
+  .grid,
+  .roles,
+  .scoreGrid,
+  .judgeActions{
+    grid-template-columns:1fr;
   }
+
+  .chat{height:420px}
+}
+
+
+/* ============================================================
+   ISHTIROKCHI: ISM + KASB + SUDDAGI MAQOM
+============================================================ */
+.participants{
+  display:grid!important;
+  grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  gap:12px!important;
+}
+.participantIdentityCard{
+  min-height:94px;
+  padding:14px 15px;
+  display:flex;
+  align-items:center;
+  gap:13px;
+  background:#F3F0E7;
+  border:1px solid #C9BEA3;
+  border-radius:12px;
+  box-shadow:0 5px 14px rgba(36,45,40,.06);
+}
+.participantIdentityAvatar{
+  width:48px;
+  height:48px;
+  flex:0 0 48px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:10px;
+  background:#33463D;
+  color:#F4EBD6;
+  border:1px solid #75694F;
+  font-size:14px;
+  font-weight:900;
+  letter-spacing:.5px;
+}
+.participantIdentityInfo{min-width:0;}
+.participantIdentityInfo strong{
+  display:block;
+  color:#26342E;
+  font-size:17px;
+  line-height:1.3;
+  margin-bottom:5px;
+}
+.participantIdentityInfo span{
+  display:block;
+  color:#59655F;
+  font-size:14px;
+  line-height:1.45;
+}
+.participantIdentityInfo em{
+  display:block;
+  margin-top:3px;
+  color:#725F36;
+  font-size:14px;
+  line-height:1.45;
+  font-style:normal;
+  font-weight:800;
+}
+@media(max-width:700px){
+  .participants{grid-template-columns:1fr!important;}
+  .participantIdentityInfo strong{font-size:16px;}
+  .participantIdentityInfo span,.participantIdentityInfo em{font-size:13px;}
+}
+
+
+/* ===== ROLE EXPERIENCE + SOURCES ===== */
+.roleSelectionShell{margin:28px 0 22px;padding:24px;border:1px solid #d7d1c5;border-radius:22px;background:linear-gradient(145deg,#fbf9f3,#f1eee5);box-shadow:0 16px 40px rgba(28,52,44,.08)}
+.roleSelectionHead{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;margin-bottom:18px}.roleSelectionHead h3{margin:0!important;font-size:27px!important;color:#17382f}.roleSelectionHead p{margin:5px 0 0;color:#68736e;font-size:15px}.roleStepBadge{white-space:nowrap;border:1px solid #c9b792;background:#fffaf1;color:#594b3d;padding:9px 13px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.7px}
+#roles.roles{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:15px!important}
+#roles .role{position:relative!important;display:flex!important;flex-direction:column!important;align-items:flex-start!important;justify-content:center!important;min-height:122px!important;padding:18px 20px!important;border-radius:17px!important;text-align:left!important;cursor:pointer!important;overflow:hidden!important;transition:.2s ease!important}
+#roles .role:hover{transform:translateY(-3px);box-shadow:0 15px 30px rgba(26,57,47,.11)!important}
+.roleKicker{font-size:10px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;color:#8a7450;margin-bottom:8px}.roleName{font-size:21px;font-weight:900;line-height:1.15;color:#17382f}.rolePerson{font-size:14px;font-weight:750;margin-top:7px;color:#596660}.roleDuty{font-size:13px;line-height:1.45;margin-top:7px;color:#75807b;max-width:92%}
+#roles .role.selected .roleKicker,#roles .role.selected .rolePerson,#roles .role.selected .roleDuty,#roles .role.selected .roleName{color:#fff!important}#roles .role.selected:after{content:"SIZNING ROLINGIZ"!important;right:12px!important;top:12px!important;font-size:9px!important;padding:5px 8px!important;border-radius:999px!important}
+.roleGuide{margin-top:16px!important;border-radius:17px!important;padding:20px!important;font-size:16px!important;line-height:1.75!important;white-space:pre-line;background:#17382f!important;color:#f7f4eb!important;border:1px solid #496b5f!important}.roleGuide:before{content:"ROL BO‘YICHA MAXFIY YO‘RIQNOMA";display:block;font-size:11px;font-weight:900;letter-spacing:1.4px;color:#d4bd8a;margin-bottom:10px}
+.sourcePanel{margin:26px 0;padding:22px;border-radius:20px;background:#f8f6ef;border:1px solid #d7d1c5}.sourcePanelHead{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:14px}.sourcePanelHead h3{margin:0!important;font-size:23px!important;color:#17382f}.sourcePanelHead span{font-size:12px;color:#718078}.sourceGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.sourceCard{display:block;text-decoration:none;padding:16px 17px;border:1px solid #d7d1c5;border-radius:14px;background:#fffdf8;color:#26312d;transition:.18s}.sourceCard:hover{transform:translateY(-2px);border-color:#9b875e;box-shadow:0 10px 22px rgba(35,57,49,.08)}.sourceCard strong{display:block;font-size:16px;color:#17382f;margin-bottom:4px}.sourceCard small{font-size:12px;line-height:1.45;color:#748079}
+@media(max-width:700px){#roles.roles,.sourceGrid{grid-template-columns:1fr!important}.roleSelectionHead{align-items:flex-start;flex-direction:column}.roleSelectionShell{padding:17px}#roles .role{min-height:112px!important}.roleName{font-size:20px}}
+</style>
+
+<style id="premium-court-ui-v2">
+:root{--ink:#102A22;--navy:#173D31;--navy2:#254F40;--graphite:#2B211B;--graphite2:#2b343b;--silver:#e7eaed;--paper:#f4f6f7;--white:#fff;--line:#cfd5da;--cold:#B08D57;--muted:#68737c}
+body{background:linear-gradient(180deg,#e9edf0 0,#f5f6f7 260px);color:var(--ink);font-family:Inter,Arial,sans-serif}
+header{background:linear-gradient(115deg,#06131e,#173D31 58%,#18232b);padding:20px 30px;border-bottom:1px solid #3b4851;box-shadow:0 10px 30px #102A2228}
+header h1{letter-spacing:.2px;font-size:24px} header p{color:#c9d1d7;margin:5px 0 0}
+.container{max-width:1420px;margin:28px auto;padding:0 24px}.card{border:1px solid #d7dde1;border-radius:18px;box-shadow:0 18px 55px #102A2212;padding:28px}
+.item{border:1px solid #d8dee2;border-radius:14px;padding:24px;box-shadow:0 8px 22px #102A220b;position:relative;overflow:hidden}.item:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#173D31;opacity:.88}.item:hover{border-color:#758895;box-shadow:0 16px 36px #102A2218;transform:translateY(-3px)}.item h3{color:#173D31}
+.primary,.judgeAction{background:linear-gradient(180deg,#254F40,#071b2b);border:1px solid #173b55;color:#fff;box-shadow:0 7px 16px #102A2222}.primary:hover,.judgeAction:hover{filter:brightness(1.08)}.back{background:#e8ecef;color:#26343d;border:1px solid #cfd6db}
+.role{border:1px solid #ccd4d9;background:#fbfcfc;border-radius:12px}.role:hover{border-color:#536a79}.role.selected{background:linear-gradient(135deg,#102A22,#12344c);border-color:#12344c;box-shadow:0 10px 24px #102A222b}
+.caseText{background:#f7f9fa;border:1px solid #dce2e6;border-left:5px solid #173D31}.privateInfo{background:#eef2f4;border:1px solid #d7dde1;border-left:5px solid #364a58}.chip{background:#edf1f3;border-color:#d5dde1;color:#263640}.timer{color:#102A22;letter-spacing:3px}
+.info{background:#eef2f4;border:1px solid #d8e0e4;border-left:4px solid #173D31}.stage{background:linear-gradient(90deg,#e7ecef,#f5f7f8);border:1px solid #d2dbe0;border-left:5px solid #173D31;color:#173D31}.turn{background:#eef3f5;border:1px solid #cad5db;border-left:5px solid #B08D57;color:#172731}
+.chat{height:540px;background:linear-gradient(180deg,#f7f9fa,#eef2f4);border:1px solid #cfd7dc;box-shadow:inset 0 1px 8px #102A220c}.message{border:1px solid #d8dee2;box-shadow:0 5px 14px #102A220b}.judge{background:#e7ecef;border-left-color:#102A22}.clerk{background:#eef0f2;border-left-color:#59656e}.prosecutor{background:#eceff1;border-left-color:#303b43}.defense{background:#e9f0f4;border-left-color:#315d75}.victim,.party{background:#f0f2f3;border-left-color:#596a75}.witness{background:#eceff1;border-left-color:#4a555d}.student{background:#e5edf1;border-left-color:#173D31;box-shadow:0 8px 20px #102A2215}.system{background:#f1f3f4;border-left-color:#7a858c}
+textarea{border:1px solid #bfcbd2;background:#fbfcfc;outline:none;transition:.2s}textarea:focus{border-color:#365b70;box-shadow:0 0 0 4px #B08D5718}.send{background:linear-gradient(180deg,#163b53,#173D31);box-shadow:0 8px 20px #102A2224}.score{color:#102A22}.scoreBox{background:#f7f9fa;border-color:#d6dde1}.better{background:#eef3f5;border-left-color:#173e57}.law{background:#edf1f3;border-left-color:#354c5c}.warning{background:#f1f2f3;border-left-color:#69757d}
+#court{background:#eef1f3;border-color:#c8d0d5}#court>h2{background:linear-gradient(110deg,#102A22,#254F40,#2B211B);color:#fff;margin:-28px -28px 22px;padding:22px;border-radius:17px 17px 0 0;letter-spacing:.4px;border-bottom:1px solid #45525b}#courtInfo{font-size:15px}#studentInput{background:#fff;border:1px solid #cfd7dc;border-radius:14px;padding:16px;margin-top:14px;box-shadow:0 10px 26px #102A2210}
+#prepare>h2,#casesScreen>h2,#result>h2{color:#102A22;letter-spacing:-.2px}.muted{color:#68737c}
+@media(max-width:750px){header{padding:18px}.container{padding:0 12px;margin:14px auto}.card{padding:18px;border-radius:14px}#court>h2{margin:-18px -18px 18px;border-radius:13px 13px 0 0}.chat{height:460px}}
+</style>
+
+
+<style id="premium-court-ui-v3">
+:root{--ink:#102A22;--navy:#173D31;--graphite:#20272D;--paper:#F4F6F7;--silver:#E7EAED;--cold:#B08D57}
+body{background:linear-gradient(180deg,#e8ecef,#f5f6f7 320px);font-family:Inter,Arial,sans-serif}
+header{background:linear-gradient(110deg,#0A1511,#102A22 48%,#173D31);border-bottom:1px solid #314754;padding:20px 30px}header h1{font-size:22px;margin:0;color:#f4f7f8}header p{color:#9fb0ba}
+#home{padding:0;overflow:hidden}#home>h2{margin:0;padding:50px 42px 10px;background:linear-gradient(115deg,#102A22,#173D31);color:white;font-size:34px}#home>.grid{padding:28px}.item .icon{display:none}.item{min-height:160px;background:linear-gradient(145deg,#fff,#f5f7f8)}
+#court{padding:0;background:#e9edef;overflow:hidden;border-radius:18px}#court>h2{margin:0!important;border-radius:0!important;padding:20px 24px!important;text-align:left!important;background:linear-gradient(110deg,#0A1511,#102A22 55%,#173D31)!important;font-size:17px}#court>h2:after{content:"  •  O‘QUV SUD TIZIMI FAOL";float:right;color:#9db0bb;font-size:9px;letter-spacing:1px;margin-top:5px}
+#courtInfo{margin:0;border:0;border-radius:0;background:#2B211B;color:#dce4e8;padding:13px 18px;border-bottom:1px solid #39454c}#stageTitle{margin:0;border-radius:0;border:0;border-left:0;background:#131b20;color:#edf2f4;padding:13px 18px;font-size:11px;letter-spacing:.5px}#stageTitle:before{content:"JORIY PROTSESSUAL BOSQICH  •  ";color:#81929c;font-size:8px;font-weight:900}
+#turnInfo{margin:14px 16px 8px;background:#e9eef1;border:1px solid #cbd6dc;border-left:4px solid #B08D57;border-radius:8px;padding:12px 14px}#turnInfo:before{content:"SIZNING PROTSESSUAL NAVBATINGIZ";display:block;color:#567281;font-size:7px;font-weight:900;letter-spacing:1px;margin-bottom:4px}
+#chat{margin:0 16px;height:500px;border-radius:10px;background:linear-gradient(180deg,#f8f9fa,#eef1f3);border:1px solid #cfd7dc}.message{border-radius:8px}.student{background:#e5edf1!important;border-left-color:#B08D57!important}
+#judgeControls{margin:12px 16px;padding:14px;background:white;border:1px solid #d4dce0;border-radius:10px}#studentInput{margin:10px 16px 0!important}#finish{width:calc(100% - 32px);margin:12px 16px 18px;background:#2B211B;border-color:#3a474f}.muted{margin:8px 16px 0}
+#prepare,#casesScreen,#result{border-top:5px solid #173D31}#result .score{color:#173D31}.scoreBox{border-radius:10px}
+@media(max-width:750px){#home>h2{font-size:25px;padding:32px 20px 8px}#home>.grid{padding:18px}#court>h2:after{display:none}#chat{height:430px;margin:0 10px}#turnInfo,#studentInput,#judgeControls{margin-left:10px!important;margin-right:10px!important}#finish{width:calc(100% - 20px);margin-left:10px;margin-right:10px}}
+</style>
+
+<style id="royal-court-design-v4">
+/* ROYAL COURT — dark emerald / antique gold / walnut */
+:root{--emerald0:#06110d;--emerald1:#0b2018;--emerald2:#123629;--emerald3:#1b4a39;--gold1:#8f6b32;--gold2:#c6a15b;--gold3:#ead19a;--walnut:#2b1c14;--cream:#f7f2e7;--paper:#fbfaf6;--ink2:#17241e}
+body{background:radial-gradient(circle at 50% -120px,#355848 0,#14271f 300px,#e9e3d8 301px,#f4f0e8 100%);background-attachment:fixed}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.16;background-image:linear-gradient(90deg,rgba(92,61,31,.08) 1px,transparent 1px),linear-gradient(rgba(92,61,31,.06) 1px,transparent 1px);background-size:42px 42px;z-index:-1}
+header{position:relative;overflow:hidden;background:linear-gradient(120deg,#050d0a,#0b2018 42%,#173d2f 75%,#281a12)!important;border-bottom:3px solid var(--gold1)!important;box-shadow:0 16px 45px #06110d66!important}
+header:before{content:"§";position:absolute;right:55px;top:-46px;font-family:Georgia,serif;font-size:170px;color:#e4c37b0d;transform:rotate(-7deg)}
+header:after{content:"VIRTUAL COURT • LEGAL PRACTICE SYSTEM";position:absolute;right:30px;bottom:8px;color:#d6b87388;font-size:7px;letter-spacing:2px;font-weight:800}
+header h1{font-family:Georgia,'Times New Roman',serif!important;letter-spacing:1.1px!important;text-shadow:0 2px 10px #0008}header h1:before{content:"⚖";display:inline-grid;place-items:center;width:38px;height:38px;margin-right:12px;border:1px solid #c6a15b88;border-radius:50%;color:var(--gold2);font-family:Arial;vertical-align:middle;box-shadow:inset 0 0 18px #c6a15b18,0 0 0 4px #ffffff08}
+.container{max-width:1450px!important}.card{background:linear-gradient(145deg,#fffefb,#f7f3eb)!important;border:1px solid #c9b996!important;box-shadow:0 22px 60px #1c120d24!important}
+#home{position:relative}#home:before{content:"";position:absolute;inset:0 0 auto 0;height:6px;background:linear-gradient(90deg,#6e4c22,#d1ad65,#7c5a29);z-index:3}
+#home>h2{position:relative;overflow:hidden;background:radial-gradient(circle at 80% 30%,#2d604a,#0b2018 48%,#07130e)!important;font-family:Georgia,'Times New Roman',serif;font-size:38px!important;letter-spacing:.3px;text-shadow:0 3px 18px #0008;padding-top:62px!important;padding-bottom:24px!important}
+#home>h2:after{content:"SUD AMALIYOTI • PROTSESSUAL MAHORAT • PROFESSIONAL TAHLIL";display:block;margin-top:15px;color:#d5bd88;font-family:Inter,Arial,sans-serif;font-size:8px;letter-spacing:2px;font-weight:800}
+#home>.grid{gap:18px!important;background:linear-gradient(180deg,#f5efe4,#fbfaf6)!important}
+.item{counter-increment:legal-card;min-height:178px!important;padding:28px 25px 24px 29px!important;background:linear-gradient(145deg,#fffdf8,#f2eadc)!important;border:1px solid #cfbf9e!important;border-radius:16px!important;box-shadow:0 9px 24px #2b1c1412!important;transition:.25s cubic-bezier(.2,.8,.2,1)!important}
+.grid{counter-reset:legal-card}.item:before{width:5px!important;background:linear-gradient(180deg,var(--gold2),#6f4d22)!important;opacity:1!important}.item:after{content:"0" counter(legal-card);position:absolute;right:17px;top:12px;font-family:Georgia,serif;font-size:34px;font-weight:700;color:#173d2f12}
+.item:hover{transform:translateY(-6px)!important;border-color:#a98547!important;box-shadow:0 20px 38px #2b1c1426!important;background:linear-gradient(145deg,#fffefb,#eee2cf)!important}.item h3{font-family:Georgia,'Times New Roman',serif;color:#123629!important;font-size:19px!important}.item p{color:#66594c!important;line-height:1.65}
+.primary,.judgeAction,.send{position:relative;overflow:hidden;background:linear-gradient(180deg,#214f3c,#0b251b)!important;border:1px solid #8b6a34!important;box-shadow:inset 0 1px 0 #ffffff1c,0 9px 20px #0b20182d!important;letter-spacing:.45px}.primary:after,.send:after{content:"";position:absolute;left:-80%;top:0;width:45%;height:100%;background:linear-gradient(90deg,transparent,#ead19a24,transparent);transform:skewX(-22deg);transition:.5s}.primary:hover:after,.send:hover:after{left:130%}.primary:hover,.judgeAction:hover,.send:hover{filter:brightness(1.13);transform:translateY(-1px)}
+.back{background:#eee5d5!important;border-color:#c9b792!important;color:#4c3c2e!important}.role{background:#fffaf1!important;border-color:#d3c3a4!important}.role:hover{border-color:#a98547!important;background:#f5ead8!important}.role.selected{background:linear-gradient(135deg,#0b2018,#1b4a39)!important;border-color:#b38a45!important;box-shadow:0 12px 26px #0b201833!important;color:white!important}.role.selected:after{content:"SIZ";position:absolute;right:7px;top:6px;background:#c6a15b;color:#14241d;padding:2px 5px;border-radius:3px;font-size:7px;font-weight:900;letter-spacing:.5px}
+.caseText{background:linear-gradient(180deg,#fffdf8,#f7f1e6)!important;border-color:#d5c5a6!important;border-left:5px solid #b08d57!important;box-shadow:inset 0 0 35px #8f6b3208}.privateInfo{background:#f3ecdf!important;border-color:#d4c4a5!important;border-left-color:#173d2f!important}.chip{background:#f3eadb!important;border-color:#d7c7a8!important;color:#44382e!important}.timer{font-family:Georgia,serif;color:#173d2f!important;text-shadow:0 1px 0 #fff}
+#court{position:relative;background:linear-gradient(180deg,#ded7c9,#f1ede4)!important;border:1px solid #9f8559!important;box-shadow:0 30px 80px #0b20183d!important}#court:before{content:"§";position:absolute;right:35px;top:85px;font-family:Georgia,serif;font-size:150px;color:#8f6b3209;pointer-events:none}
+#court>h2{position:relative;background:linear-gradient(110deg,#050d0a,#0b2018 50%,#2b1c14)!important;border-bottom:2px solid #9b763b!important;font-family:Georgia,'Times New Roman',serif!important;padding:23px 26px!important}#court>h2:before{content:"⚖  ";color:#c6a15b}#court>h2:after{color:#c9ab70!important}
+#courtInfo{background:linear-gradient(90deg,#2b1c14,#38251a)!important;border-bottom:1px solid #6c5132!important;color:#eadfcd!important}#stageTitle{background:linear-gradient(90deg,#0d1914,#17251e)!important;border-bottom:1px solid #455448!important}#stageTitle:before{color:#b59b6b!important}
+#chat{background:linear-gradient(180deg,#fbfaf6,#eee8dc)!important;border-color:#bcae92!important;box-shadow:inset 0 4px 18px #2b1c140a!important}.message{background:#fffdf8!important;border-color:#d6c9b1!important;box-shadow:0 5px 15px #2b1c140c!important}.message b{font-family:Georgia,'Times New Roman',serif;color:#173d2f}.judge{background:#e9eee8!important;border-left-color:#173d2f!important}.clerk{background:#f1ede6!important;border-left-color:#76634c!important}.prosecutor{background:#f3e9e6!important;border-left-color:#7c3f36!important}.defense{background:#e8eff0!important;border-left-color:#356579!important}.victim,.party{background:#f3eee6!important;border-left-color:#8b6a43!important}.witness{background:#efeee8!important;border-left-color:#68766d!important}.student{background:#edf2e9!important;border-left-color:#c6a15b!important;box-shadow:0 9px 20px #173d2f18!important}
+#turnInfo{background:linear-gradient(90deg,#f3ead8,#fbf7ee)!important;border-color:#c9b58e!important;border-left-color:#b08d57!important;color:#2c3b33!important}#turnInfo:before{color:#80612f!important}textarea{background:#fffdf8!important;border-color:#cbbd9f!important}textarea:focus{border-color:#9b763b!important;box-shadow:0 0 0 4px #b08d571c!important}
+#judgeControls,#studentInput{background:#fbfaf6!important;border-color:#c9b996!important;box-shadow:0 10px 26px #2b1c1410!important}#finish{background:linear-gradient(180deg,#3a281c,#24170f)!important;border:1px solid #8b6a34!important;color:#f2e7d3!important}
+#prepare,#casesScreen,#result{border-top:6px solid #173d2f!important;position:relative}#prepare:before,#casesScreen:before,#result:before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,transparent,#c6a15b,transparent)}
+.score{font-family:Georgia,serif;color:#173d2f!important}.scoreBox{background:linear-gradient(145deg,#fffdf8,#f1eadf)!important;border-color:#cfbf9f!important}.better{background:#edf2e9!important;border-left-color:#173d2f!important}.law{background:#f3ecdf!important;border-left-color:#b08d57!important}.warning{background:#f5eee4!important;border-left-color:#76563a!important}
+@media(max-width:750px){header:after{display:none}header h1:before{width:31px;height:31px;font-size:15px}#home>h2{font-size:27px!important;padding-top:42px!important}.item{min-height:150px!important}#court:before{display:none}}
+@media(prefers-reduced-motion:no-preference){.card{animation:royalIn .45s ease both}.item{animation:royalIn .5s ease both}.item:nth-child(2){animation-delay:.04s}.item:nth-child(3){animation-delay:.08s}.item:nth-child(4){animation-delay:.12s}@keyframes royalIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}}
+</style>
+
+
+<style id="font-size-upgrade">
+/* Faqat shriftlar kattalashtirildi — dizayn va funksiyalar o‘zgarmaydi */
+body{font-size:16px!important;}
+.brandText h1{font-size:25px!important;}
+.brandText p{font-size:13px!important;}
+.headerStatus{font-size:11px!important;}
+.heroTag{font-size:12px!important;}
+.hero h2{font-size:44px!important;}
+.hero p{font-size:17px!important;}
+.heroStat strong{font-size:18px!important;}
+.heroStat span{font-size:10px!important;}
+.sectionHeading h2{font-size:27px!important;}
+.sectionHeading p{font-size:14px!important;}
+.directionNumber{font-size:14px!important;}
+.directionCard h3{font-size:22px!important;}
+.directionCard p{font-size:14px!important;}
+.directionFooter{font-size:11px!important;}
+.primary,.back{font-size:13px!important;}
+.pageTop h2{font-size:28px!important;}
+.pageTop p{font-size:14px!important;}
+.caseCode{font-size:10px!important;}
+.caseCard h3{font-size:20px!important;}
+.caseCard p{font-size:14px!important;}
+.openCase{font-size:10px!important;}
+.documentHeader strong{font-size:12px!important;}
+.documentBadge{font-size:9px!important;}
+.caseText{font-size:16px!important;line-height:1.85!important;}
+.panelTitle{font-size:11px!important;}
+.chip{font-size:12px!important;}
+.role{font-size:13px!important;}
+.role.selected::after{font-size:8px!important;}
+.privateInfo{font-size:13px!important;}
+.timerLabel{font-size:10px!important;}
+.timerHelp{font-size:10px!important;}
+.courtIdentityText strong{font-size:16px!important;}
+.courtIdentityText span{font-size:10px!important;}
+.liveBadge{font-size:10px!important;}
+.progressStep{font-size:9px!important;}
+.sideTitle{font-size:9px!important;}
+.caseMiniRow span{font-size:9px!important;}
+.caseMiniRow strong{font-size:12px!important;}
+.materialBtn{font-size:12px!important;}
+.stageMeta span{font-size:9px!important;}
+.stage{font-size:17px!important;}
+.stageNumber{font-size:11px!important;}
+.transcriptHeader{font-size:9px!important;}
+.message{font-size:13px!important;line-height:1.65!important;}
+.message b{font-size:12px!important;}
+.turn{font-size:12px!important;}
+.turn::before{font-size:8px!important;}
+textarea{font-size:14px!important;}
+.send{font-size:11px!important;}
+.keyboardHint{font-size:9px!important;}
+.participantAvatar{font-size:10px!important;}
+.participantData strong{font-size:11px!important;}
+.participantData span{font-size:9px!important;}
+.youBadge{font-size:7px!important;}
+.finishBtn{font-size:11px!important;}
+.judgeControls h3{font-size:13px!important;}
+.judgeAction{font-size:11px!important;}
+.resultHero span{font-size:10px!important;}
+.resultHero h2{font-size:30px!important;}
+.scoreBox strong{font-size:22px!important;}
+.scoreBox span{font-size:10px!important;}
+.feedback{font-size:13px!important;}
+.feedback h3{font-size:15px!important;}
+@media(max-width:520px){
+ .hero h2{font-size:29px!important;}
+ .brandText h1{font-size:19px!important;}
+ .brandText p{font-size:10px!important;}
+ .message{font-size:12px!important;}
+ .caseText{font-size:14px!important;}
+}
+
+/* ============================================================
+   EYE COMFORT + LARGE TYPE OVERRIDE
+   Softer contrast, larger readable typography
+============================================================ */
+:root{
+  --eye-bg:#F3F0E8;
+  --eye-paper:#FAF8F2;
+  --eye-paper-2:#F6F3EC;
+  --eye-green:#17382F;
+  --eye-green-2:#21483D;
+  --eye-brown:#493B31;
+  --eye-brown-2:#5A493B;
+  --eye-gold:#B79A62;
+  --eye-text:#26312D;
+  --eye-muted:#68736E;
+  --eye-border:#D7D1C5;
+}
+body{background:var(--eye-bg)!important;color:var(--eye-text)!important;font-size:18px!important;line-height:1.65!important;}
+.systemHeader{background:linear-gradient(110deg,#132F28,#1B3B32 55%,#263B32)!important;border-bottom-color:#5C665F!important;box-shadow:0 7px 22px rgba(25,35,30,.12)!important;}
+.brandText h1{font-size:27px!important;letter-spacing:.3px!important;}
+.brandText p{font-size:14px!important;color:#D2D8D3!important;}
+.headerStatus{font-size:12px!important;color:#E0E4E1!important;border-color:#5B6D64!important;}
+.hero{background:linear-gradient(120deg,#17382F,#21483D 58%,#3A4037)!important;color:#F8F6EF!important;}
+.hero h2{font-size:43px!important;line-height:1.2!important;letter-spacing:-.35px!important;}
+.hero p{font-size:18px!important;line-height:1.75!important;color:#E0E2DA!important;}
+.heroTag{font-size:13px!important;color:#D4C39E!important;}
+.heroStat strong{font-size:19px!important;}
+.heroStat span{font-size:11px!important;color:#D4D8D2!important;}
+.card,.caseDocument,.panel{background:var(--eye-paper)!important;border-color:var(--eye-border)!important;box-shadow:0 10px 30px rgba(44,48,42,.07)!important;}
+.homeContent,.pageBody,.resultBody{background:var(--eye-paper)!important;}
+.sectionHeading h2,.pageTop h2{font-size:28px!important;color:#24352F!important;}
+.sectionHeading p,.pageTop p{font-size:16px!important;color:var(--eye-muted)!important;}
+.directionCard,.caseCard{background:linear-gradient(145deg,#FCFAF5,#F5F1E8)!important;border-color:var(--eye-border)!important;}
+.directionCard:hover,.caseCard:hover{border-color:#9D927D!important;box-shadow:0 12px 28px rgba(45,52,46,.09)!important;}
+.directionCard h3{font-size:23px!important;color:#263B33!important;}
+.directionCard p{font-size:16px!important;line-height:1.65!important;color:#626C67!important;}
+.directionFooter,.openCase{font-size:12px!important;color:#536F62!important;}
+.directionNumber{font-size:14px!important;background:#24473C!important;}
+.caseCode{font-size:11px!important;}
+.caseCard h3{font-size:21px!important;color:#293C35!important;}
+.caseCard p{font-size:15px!important;line-height:1.65!important;color:#66716B!important;}
+.back{font-size:14px!important;min-height:44px!important;background:#EEEAE1!important;color:#405047!important;border-color:#D4CEC1!important;}
+.primary,.send,.finishBtn{font-size:14px!important;min-height:50px!important;letter-spacing:.25px!important;}
+.primary,.send{background:linear-gradient(180deg,#285044,#1D3D34)!important;border-color:#42665B!important;}
+.panelTitle{font-size:13px!important;min-height:48px!important;color:#4B5B53!important;background:#EEEAE2!important;}
+.caseText{font-size:18px!important;line-height:1.85!important;color:#34423C!important;background:#FCFAF5!important;}
+.chip{font-size:14px!important;padding:9px 12px!important;background:#F0ECE3!important;color:#48564F!important;border-color:#D7D1C5!important;}
+.role{font-size:15px!important;min-height:60px!important;background:#FBF9F3!important;color:#384840!important;border-color:#D7D1C5!important;}
+.role.selected{background:linear-gradient(180deg,#31584B,#234237)!important;border-color:#496B5F!important;}
+.role.selected::after{font-size:9px!important;}
+.privateInfo{font-size:15px!important;line-height:1.75!important;background:#F0EEE6!important;color:#3D4C45!important;border-color:#D5D0C4!important;border-left-color:#758D80!important;}
+.timerLabel,.timerHelp{font-size:11px!important;}
+.timer{font-size:50px!important;color:#294038!important;}
+.courtShell{background:#E9E5DC!important;border-color:#CFC8BA!important;box-shadow:0 18px 48px rgba(42,48,43,.12)!important;}
+.courtTopbar{background:linear-gradient(105deg,#15332B,#1C4035 55%,#37463C)!important;border-bottom-color:#617068!important;}
+.courtIdentityText strong{font-size:17px!important;}
+.courtIdentityText span,.liveBadge{font-size:11px!important;color:#D2D8D3!important;}
+.courtProgress{background:#2F3833!important;border-bottom-color:#555F59!important;}
+.progressStep{font-size:10px!important;min-height:43px!important;color:#BCC4BF!important;background:#39423D!important;border-color:#505B55!important;}
+.progressStep.active{color:#FFFDF8!important;background:#4A5E54!important;border-color:#8B9A91!important;}
+.courtLeft{background:#303A35!important;color:#ECEFEA!important;border-right-color:#59635E!important;}
+.courtRight{background:#35403A!important;color:#ECEFEA!important;border-left-color:#5A655F!important;}
+.sideTitle{font-size:11px!important;color:#C2CBC5!important;}
+.caseMiniRow span{font-size:10px!important;color:#AAB6AF!important;}
+.caseMiniRow strong{font-size:13px!important;color:#F1F2EE!important;}
+.materialBtn{font-size:13px!important;min-height:46px!important;background:#3B4741!important;color:#E3E8E4!important;border-color:#59665F!important;}
+.courtCenter{background:#F4F1EA!important;}
+.stageBar{background:#FAF8F2!important;border-bottom-color:#D8D2C6!important;}
+.stageMeta span{font-size:10px!important;color:#7B8580!important;}
+.stage{font-size:18px!important;color:#2C4037!important;}
+.stageNumber{font-size:12px!important;background:#EFECE4!important;color:#59665F!important;border-color:#D5CFC3!important;}
+.transcriptHeader{font-size:10px!important;background:#EAE6DE!important;color:#65716B!important;border-bottom-color:#D5CFC4!important;}
+.chat{background:linear-gradient(180deg,#F8F6F0,#F1EEE7)!important;}
+.message{font-size:15px!important;line-height:1.7!important;max-width:91%!important;background:#FCFBF7!important;color:#35433D!important;border-color:#D8D2C7!important;box-shadow:0 2px 7px rgba(40,48,43,.04)!important;}
+.message b{font-size:14px!important;color:#263B32!important;}
+.message.student{background:#E8EEE9!important;border-color:#CAD6CF!important;}
+.message.system{background:#ECE9E2!important;}
+.turnPanel,.judgeControls{background:#FAF8F2!important;border-top-color:#D7D1C5!important;}
+.turn{font-size:14px!important;line-height:1.65!important;background:#E9EDE8!important;color:#33473D!important;border-color:#CBD4CE!important;border-left-color:#607E70!important;}
+.turn::before{font-size:9px!important;color:#597065!important;}
+textarea{font-size:16px!important;line-height:1.7!important;min-height:125px!important;background:#FEFDF9!important;color:#2D3D36!important;border-color:#CFC9BD!important;}
+.keyboardHint{font-size:10px!important;color:#7B8580!important;}
+.participantRow{min-height:62px!important;background:#414C46!important;border-color:#5C6861!important;}
+.participantAvatar{width:38px!important;height:38px!important;flex-basis:38px!important;font-size:11px!important;background:#303A35!important;}
+.participantData strong{font-size:12px!important;}
+.participantData span{font-size:10px!important;color:#B6C0BA!important;}
+.youBadge{font-size:8px!important;}
+.judgeControls h3{font-size:15px!important;}
+.judgeAction{font-size:13px!important;min-height:52px!important;background:#315046!important;border-color:#567267!important;}
+.resultHero{background:linear-gradient(110deg,#17382F,#21483D 55%,#3B4038)!important;}
+.resultHero span{font-size:11px!important;color:#D5DAD5!important;}
+.resultHero h2{font-size:31px!important;}
+.score{font-size:64px!important;}
+.scoreBox{background:#F6F2E9!important;border-color:#D8D1C4!important;}
+.scoreBox strong{font-size:24px!important;color:#2B4037!important;}
+.scoreBox span{font-size:11px!important;color:#66716B!important;}
+.feedback{font-size:15px!important;line-height:1.75!important;background:#F8F5EE!important;color:#3A4841!important;border-color:#D8D1C4!important;}
+.feedback h3{font-size:17px!important;color:#2B4037!important;}
+.better{background:#EDF1EC!important;border-left-color:#6B8779!important;}
+.law{background:#F0EEE8!important;border-left-color:#786D5E!important;}
+.warning{background:#F3EFE5!important;border-left-color:#9B8969!important;}
+@media(max-width:850px){body{font-size:17px!important}.hero h2{font-size:34px!important}.hero p{font-size:17px!important}.caseText{font-size:17px!important}.message{font-size:15px!important}.directionCard h3{font-size:22px!important}.directionCard p{font-size:16px!important}}
+@media(max-width:520px){.brandText h1{font-size:21px!important}.brandText p{font-size:11px!important}.hero h2{font-size:30px!important}.sectionHeading h2,.pageTop h2{font-size:24px!important}.caseText{font-size:16px!important}.message{font-size:15px!important;max-width:100%!important}textarea{font-size:16px!important}.participantData strong{font-size:12px!important}}
+</style>
+
+<style>
+/* JUDA KATTA SHRIFT — accessibility override */
+html{font-size:18px!important;}
+body{font-size:18px!important;line-height:1.65!important;}
+.brandText h1{font-size:28px!important;}
+.brandText p{font-size:15px!important;}
+.headerStatus{font-size:13px!important;}
+.heroTag{font-size:14px!important;}
+.hero h2{font-size:46px!important;line-height:1.18!important;}
+.hero p{font-size:19px!important;line-height:1.75!important;}
+.heroStat strong{font-size:22px!important;}
+.heroStat span{font-size:12px!important;}
+.sectionHeading h2,.pageTop h2{font-size:30px!important;}
+.sectionHeading p,.pageTop p{font-size:17px!important;}
+.directionCard h3{font-size:25px!important;}
+.directionCard p{font-size:17px!important;line-height:1.7!important;}
+.directionFooter,.caseCode,.openCase{font-size:13px!important;}
+.caseCard h3{font-size:22px!important;}
+.caseCard p{font-size:16px!important;line-height:1.65!important;}
+.primary,.back{font-size:16px!important;min-height:52px!important;}
+.documentHeader strong{font-size:15px!important;}
+.documentBadge{font-size:12px!important;}
+.caseText{font-size:18px!important;line-height:1.85!important;}
+.panelTitle{font-size:14px!important;min-height:50px!important;}
+.chip{font-size:15px!important;padding:10px 13px!important;}
+.role{font-size:16px!important;min-height:62px!important;}
+.role.selected::after{font-size:10px!important;}
+.privateInfo{font-size:16px!important;line-height:1.75!important;}
+.timerLabel,.timerHelp{font-size:13px!important;}
+.timer{font-size:54px!important;}
+.courtIdentityText strong{font-size:18px!important;}
+.courtIdentityText span,.liveBadge{font-size:12px!important;}
+.progressStep{font-size:12px!important;min-height:44px!important;}
+.sideTitle{font-size:12px!important;}
+.caseMiniRow span{font-size:11px!important;}
+.caseMiniRow strong{font-size:15px!important;}
+.materialBtn{font-size:15px!important;min-height:48px!important;}
+.stageMeta span{font-size:11px!important;}
+.stage{font-size:20px!important;}
+.stageNumber{font-size:13px!important;}
+.transcriptHeader{font-size:11px!important;}
+.message{font-size:17px!important;line-height:1.7!important;padding:15px 16px 15px 18px!important;}
+.message b{font-size:15px!important;margin-bottom:6px!important;}
+.turn{font-size:16px!important;line-height:1.65!important;}
+.turn::before{font-size:11px!important;}
+textarea{font-size:17px!important;line-height:1.65!important;min-height:130px!important;}
+.send{font-size:14px!important;min-height:50px!important;}
+.keyboardHint{font-size:11px!important;}
+.participantData strong{font-size:14px!important;}
+.participantData span{font-size:11px!important;}
+.participantAvatar{font-size:12px!important;width:38px!important;height:38px!important;flex-basis:38px!important;}
+.participantRow{min-height:64px!important;}
+.youBadge{font-size:9px!important;}
+.finishBtn{font-size:14px!important;min-height:50px!important;}
+.judgeControls h3{font-size:16px!important;}
+.judgeAction{font-size:14px!important;min-height:55px!important;}
+.resultHero span{font-size:12px!important;}
+.resultHero h2{font-size:32px!important;}
+.scoreBox strong{font-size:25px!important;}
+.scoreBox span{font-size:12px!important;}
+.feedback{font-size:16px!important;line-height:1.75!important;}
+.feedback h3{font-size:18px!important;}
+@media(max-width:850px){.hero h2{font-size:36px!important}.hero p{font-size:18px!important}.message{font-size:16px!important}.caseText{font-size:17px!important}}
+@media(max-width:520px){html{font-size:17px!important}.brandText h1{font-size:22px!important}.hero h2{font-size:31px!important}.directionCard h3{font-size:22px!important}.directionCard p{font-size:16px!important}.message{font-size:16px!important}.stage{font-size:18px!important}}
+</style>
+
+
+<style id="premium-live-interface-v2">
+/* ===== HUQUQIY AI: PREMIUM LIVE INTERFACE V2 ===== */
+:root{
+ --ux-bg:#EEEDE7; --ux-paper:#F8F6F0; --ux-paper2:#F2F0E9;
+ --ux-green:#173A31; --ux-green2:#21483D; --ux-green3:#2C574A;
+ --ux-brown:#493B30; --ux-gold:#A68A55; --ux-ink:#25302C;
+ --ux-muted:#65706A; --ux-line:#D4D0C5;
+}
+body{background:
+ radial-gradient(circle at 15% 0%,rgba(35,77,64,.07),transparent 31%),
+ linear-gradient(180deg,#E8E7E1 0,#F1F0EB 360px,#ECEBE5 100%)!important;
+ color:var(--ux-ink)!important;font-size:18px!important;}
+.systemHeader{min-height:104px!important;padding:0 38px!important;background:linear-gradient(110deg,#102D26,#173A31 52%,#253F36)!important;border-bottom:3px solid #8E784D!important;box-shadow:0 10px 28px rgba(27,38,33,.16)!important;}
+.brandSymbol{width:58px!important;height:58px!important;font-size:30px!important;border:1px solid rgba(207,188,145,.55)!important;background:linear-gradient(145deg,#284D41,#142E27)!important;}
+.brandText h1{font-size:27px!important;letter-spacing:1px!important;}
+.brandText p{font-size:14px!important;color:#D1D8D3!important;}
+.headerStatus{font-size:12px!important;min-height:43px!important;padding:0 16px!important;border-color:rgba(220,205,170,.3)!important;}
+.container{max-width:1510px!important;margin-top:32px!important;}
+.card{border-radius:20px!important;border:1px solid #D1CEC4!important;box-shadow:0 18px 48px rgba(35,43,38,.11)!important;}
+.hero{min-height:365px!important;padding:60px 58px!important;background:
+ linear-gradient(90deg,rgba(15,43,36,.98),rgba(28,67,56,.94)),
+ repeating-linear-gradient(135deg,rgba(255,255,255,.025) 0 1px,transparent 1px 22px)!important;}
+.hero:before{width:520px!important;height:520px!important;border-color:rgba(211,191,145,.13)!important;}
+.hero:after{width:350px!important;height:350px!important;border-color:rgba(211,191,145,.16)!important;}
+.heroContent:after{content:'ELEKTRON SUD AMALIYOTI';display:inline-flex;margin-top:26px;padding:9px 13px;border:1px solid rgba(214,196,154,.35);border-radius:7px;color:#D9CBAA;font-size:12px;font-weight:850;letter-spacing:1.4px;}
+.heroTag{font-size:14px!important;color:#D8C9A7!important;}
+.hero h2{font-size:50px!important;line-height:1.12!important;max-width:920px!important;}
+.hero p{font-size:20px!important;max-width:850px!important;line-height:1.72!important;color:#E2E7E3!important;}
+.heroStats{gap:12px!important;}
+.heroStat{min-width:145px!important;padding:14px 16px!important;background:rgba(255,255,255,.055)!important;border-color:rgba(222,208,175,.22)!important;backdrop-filter:blur(5px);}
+.heroStat strong{font-size:22px!important;}.heroStat span{font-size:12px!important;}
+.homeContent,.pageBody{padding:35px!important;}
+.sectionHeading h2,.pageTop h2{font-size:30px!important;}.sectionHeading p,.pageTop p{font-size:17px!important;}
+.directionGrid{gap:20px!important;}.directionCard{min-height:215px!important;padding:29px!important;border-radius:16px!important;overflow:hidden!important;}
+.directionCard:before{content:'';position:absolute;left:0;top:0;bottom:0;width:6px;background:linear-gradient(#9D8555,#315D50);}
+.directionNumber{width:48px!important;height:48px!important;font-size:15px!important;background:linear-gradient(145deg,#2A5548,#173A31)!important;border:1px solid #6F725B!important;}
+.directionCard h3{font-size:27px!important;margin-bottom:12px!important;}.directionCard p{font-size:17px!important;line-height:1.65!important;}.directionFooter{font-size:12px!important;margin-top:22px!important;color:#6D5C3C!important;}
+.caseCard{min-height:175px!important;padding:25px!important;border-radius:14px!important;}.caseCard:before{content:'ISH';position:absolute;right:17px;top:16px;font-size:11px;font-weight:900;letter-spacing:1.5px;color:#9A8C72;}
+.caseCode{font-size:11px!important;padding:7px 9px!important;}.caseCard h3{font-size:22px!important;}.caseCard p{font-size:16px!important;}.openCase{font-size:12px!important;}
+.pageTop{padding:29px 34px!important;background:linear-gradient(180deg,#FAF8F2,#F2F0E9)!important;border-bottom:2px solid #D4D0C5!important;}.back{font-size:14px!important;min-height:45px!important;}
+.documentHeader{min-height:58px!important;background:linear-gradient(100deg,#173A31,#294D42)!important;border-bottom:2px solid #927B4C!important;}.documentHeader strong{font-size:14px!important;}.documentBadge{font-size:11px!important;}.caseText{font-size:20px!important;line-height:1.82!important;padding:31px!important;background:#FAF8F2!important;}
+.panelTitle,.sideTitle{font-size:13px!important;letter-spacing:1px!important;}.panelBody{padding:19px!important;}.chip{font-size:15px!important;padding:10px 13px!important;}.role{font-size:16px!important;min-height:66px!important;padding:14px!important;}.privateInfo{font-size:16px!important;line-height:1.75!important;}.timerLabel,.timerHelp{font-size:12px!important;}.timer{font-size:54px!important;}.primary{font-size:15px!important;min-height:56px!important;}
+.courtShell{border-radius:19px!important;box-shadow:0 25px 70px rgba(29,39,34,.18)!important;}.courtTopbar{min-height:88px!important;padding:0 27px!important;background:linear-gradient(105deg,#102D26,#173A31 52%,#2B463C)!important;border-bottom:2px solid #917A4B!important;}.courtSeal{width:51px!important;height:51px!important;flex-basis:51px!important;font-size:25px!important;background:#244B3F!important;border-color:#776E51!important;}.courtIdentityText strong{font-size:18px!important;}.courtIdentityText span{font-size:12px!important;}.liveBadge{font-size:11px!important;padding:9px 13px!important;}
+.courtProgress{padding:13px 16px!important;background:#27312D!important;gap:8px!important;}.progressStep{min-height:45px!important;font-size:11px!important;background:#303A36!important;border-color:#465149!important;}.progressStep.active{background:linear-gradient(180deg,#355E51,#294B40)!important;border-color:#9A865D!important;color:#FFFDF7!important;box-shadow:inset 0 -2px 0 #A78D57!important;}
+.courtGrid{grid-template-columns:280px minmax(0,1fr) 315px!important;}.courtLeft{background:#29342F!important;}.courtRight{background:#303A36!important;}.sideTitle{padding:17px 17px 11px!important;color:#C8B991!important;}.caseMiniRow span{font-size:11px!important;}.caseMiniRow strong{font-size:14px!important;}.materialBtn{min-height:49px!important;font-size:14px!important;padding:0 13px!important;}
+.stageBar{min-height:75px!important;padding:13px 20px!important;background:#FAF8F2!important;}.stageMeta span{font-size:11px!important;}.stage{font-size:19px!important;}.stageNumber{min-width:45px!important;height:39px!important;font-size:12px!important;}.transcriptHeader{min-height:42px!important;font-size:11px!important;padding:0 20px!important;}
+.chat{height:510px!important;padding:21px!important;background:linear-gradient(180deg,#F5F3ED,#EEECE5)!important;}.message{max-width:90%!important;padding:16px 17px 16px 20px!important;font-size:17px!important;line-height:1.7!important;border-radius:10px!important;}.message b{font-size:15px!important;margin-bottom:7px!important;}.message.student{background:#E4ECE7!important;border-color:#C2D2C9!important;}.message.student:before{background:#2E6554!important;}
+.turnPanel{padding:18px!important;background:#FAF8F2!important;}.turn{font-size:16px!important;line-height:1.6!important;padding:15px 16px!important;background:#E9ECE7!important;border-left-color:#356755!important;}.turn:before{font-size:10px!important;color:#4D6E61!important;}textarea{min-height:125px!important;font-size:17px!important;line-height:1.65!important;padding:15px!important;background:#FFFDF8!important;}.send{min-height:52px!important;font-size:13px!important;background:linear-gradient(180deg,#315F50,#1E4438)!important;border-color:#496D60!important;}.keyboardHint{font-size:10px!important;}
+.participantRow{min-height:66px!important;padding:11px!important;}.participantAvatar{width:39px!important;height:39px!important;flex-basis:39px!important;font-size:11px!important;}.participantData strong{font-size:13px!important;}.participantData span{font-size:10px!important;}.youBadge{font-size:9px!important;padding:3px 6px!important;background:#D7C59B!important;}.finishBtn{min-height:51px!important;font-size:12px!important;}
+.resultHero{padding:45px 32px!important;background:linear-gradient(110deg,#102D26,#173A31 50%,#29493F)!important;border-bottom:3px solid #967D4C!important;}.resultHero span{font-size:12px!important;}.resultHero h2{font-size:34px!important;}.score{font-size:72px!important;}.scoreBox strong{font-size:26px!important;}.scoreBox span{font-size:11px!important;}.feedback{font-size:17px!important;line-height:1.75!important;padding:22px!important;}.feedback h3{font-size:19px!important;}
+/* subtle life, not flashy */
+.directionCard,.caseCard,.panel,.caseDocument{transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease!important;}.directionCard:hover,.caseCard:hover{transform:translateY(-5px)!important;box-shadow:0 18px 36px rgba(38,48,42,.13)!important;}.panel:hover,.caseDocument:hover{border-color:#B8B09E!important;}
+@media(max-width:1180px){.courtGrid{grid-template-columns:245px minmax(0,1fr)!important;}.courtRight{grid-column:1/-1!important;}.participantList{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
+@media(max-width:850px){body{font-size:17px!important}.systemHeader{min-height:88px!important;padding:12px 18px!important}.brandText h1{font-size:22px!important}.brandText p{font-size:12px!important}.hero{padding:39px 25px!important}.hero h2{font-size:36px!important}.hero p{font-size:18px!important}.directionCard h3{font-size:24px!important}.directionCard p{font-size:17px!important}.courtGrid{grid-template-columns:1fr!important}.courtLeft{border-right:0!important}.courtRight{grid-column:auto!important}.message{font-size:16px!important}.caseText{font-size:18px!important}.role{font-size:16px!important}.participantList{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:520px){.hero h2{font-size:31px!important}.hero p{font-size:17px!important}.sectionHeading h2,.pageTop h2{font-size:25px!important}.homeContent,.pageBody{padding:19px!important}.caseText{font-size:18px!important;padding:20px!important}.chat{height:450px!important;padding:12px!important}.message{font-size:16px!important;max-width:98%!important}.turn{font-size:15px!important}textarea{font-size:17px!important}.participantList{grid-template-columns:1fr!important}}
+
+/* ===== EXTRA LARGE READABLE TYPE — 2026-10-05 ===== */
+html { font-size: 19px !important; }
+body { font-size: 19px !important; line-height: 1.72 !important; }
+h1 { font-size: clamp(32px, 4vw, 46px) !important; line-height: 1.15 !important; }
+h2 { font-size: clamp(28px, 3vw, 38px) !important; line-height: 1.2 !important; }
+h3 { font-size: 25px !important; line-height: 1.3 !important; }
+h4 { font-size: 21px !important; }
+p, li, label, input, select, textarea { font-size: 18px !important; }
+button, .btn, [class*="btn"] { font-size: 17px !important; font-weight: 800 !important; }
+.direction p, .case-card p, .caseCard p, .caseText, #caseText { font-size: 19px !important; line-height: 1.8 !important; }
+.direction h3, .case-card h3, .caseCard h3 { font-size: 24px !important; }
+.role-card, .roleCard, [class*="role-card"], [class*="roleCard"] { font-size: 18px !important; }
+.role-card h3, .roleCard h3, [class*="role-card"] h3, [class*="roleCard"] h3 { font-size: 23px !important; }
+.role-card p, .roleCard p, [class*="role-card"] p, [class*="roleCard"] p { font-size: 17px !important; line-height: 1.65 !important; }
+.message, .msg, [class*="message"] { font-size: 18px !important; line-height: 1.72 !important; }
+textarea { min-height: 145px !important; }
+.participant, .participant-row, [class*="participant"] { font-size: 17px !important; }
+small, .small, .muted, [class*="subtitle"], [class*="meta"] { font-size: 14px !important; }
+@media (max-width: 760px) {
+  html, body { font-size: 17px !important; }
+  p, li, label, input, select, textarea { font-size: 17px !important; }
+  button, .btn, [class*="btn"] { font-size: 16px !important; }
+  .caseText, #caseText, .message, .msg, [class*="message"] { font-size: 17px !important; }
+  .role-card p, .roleCard p, [class*="role-card"] p, [class*="roleCard"] p { font-size: 16px !important; }
+}
+</style>
+
+
+<style id="persistent-navigation-v1">
+#quickNav{position:sticky;top:12px;z-index:9999;display:flex;gap:12px;align-items:center;justify-content:space-between;margin:0 auto 18px;max-width:1180px;padding:12px 14px;background:rgba(250,248,242,.96);border:1px solid #d7d1c5;border-left:5px solid #967d4c;border-radius:16px;box-shadow:0 10px 28px rgba(20,43,35,.10);backdrop-filter:blur(12px)}
+#quickNav.hidden{display:none!important}.quickNavLeft{display:flex;gap:10px;flex-wrap:wrap}.navBtn{min-height:52px;padding:0 19px;border:1px solid #c9c1b4;border-radius:12px;background:#fffdf8;color:#17382f;font-size:17px!important;font-weight:850;letter-spacing:.1px;cursor:pointer;box-shadow:0 4px 12px rgba(25,50,41,.07);transition:.18s ease}.navBtn:hover{transform:translateY(-2px);border-color:#967d4c;background:#f7f1e6}.navBtn.homeBtn{background:#17382f;color:#fff;border-color:#17382f}.navBtn.casesBtn{background:#493b31;color:#fff;border-color:#493b31}.navCrumb{font-size:14px;font-weight:800;color:#6d6a62;text-align:right;max-width:360px}.navCrumb strong{color:#17382f;font-size:15px}@media(max-width:720px){#quickNav{top:6px;padding:9px;align-items:stretch;flex-direction:column}.quickNavLeft{display:grid;grid-template-columns:1fr 1fr}.navBtn{font-size:15px!important;min-height:48px;padding:0 10px}.navCrumb{text-align:left;max-width:none;font-size:12px}.navCrumb strong{font-size:13px}}
+</style>
+
+<style id="trilingual-ui-v1">
+.langSwitch{position:fixed;right:22px;top:18px;z-index:10050;display:flex;gap:6px;padding:7px;background:rgba(250,248,242,.96);border:1px solid #d7d1c5;border-radius:14px;box-shadow:0 8px 24px rgba(20,43,35,.16);backdrop-filter:blur(12px)}.langBtn{min-width:52px;height:42px;border:1px solid #c9c1b4;border-radius:9px;background:#fffdf8;color:#17382f;font-size:15px;font-weight:900;cursor:pointer}.langBtn.active{background:#17382f;color:#fff;border-color:#17382f}.langLabel{position:fixed;right:22px;top:70px;z-index:10049;font-size:11px;font-weight:800;color:#6d6a62;background:#f8f5ed;padding:4px 8px;border-radius:7px}@media(max-width:700px){.langSwitch{right:8px;top:8px}.langLabel{display:none}.langBtn{min-width:44px;height:38px;font-size:13px}header{padding-top:62px!important}}
+</style>
+
+<style id="huquqiy-ai-premium-v10">
+:root{
+  --hai-navy:#06162f;
+  --hai-navy-2:#0a2347;
+  --hai-blue:#123f78;
+  --hai-blue-soft:#1b579c;
+  --hai-gold:#d4af37;
+  --hai-gold-light:#f2d77c;
+  --hai-gold-deep:#9b7415;
+  --hai-ivory:#fffaf0;
+  --hai-text:#f7f9fc;
+  --hai-muted:#c7d1df;
+  --hai-panel:rgba(9,31,63,.94);
+  --hai-panel-2:rgba(13,45,86,.88);
+  --hai-line:rgba(212,175,55,.42);
+  --hai-shadow:0 22px 60px rgba(0,0,0,.34);
+}
+*{box-sizing:border-box}
+html{font-size:18px;scroll-behavior:smooth}
+body{
+  margin:0;
+  min-height:100vh;
+  color:var(--hai-text)!important;
+  background:
+    radial-gradient(circle at 12% 0%,rgba(35,91,157,.30),transparent 34%),
+    radial-gradient(circle at 88% 12%,rgba(212,175,55,.10),transparent 28%),
+    linear-gradient(145deg,#031022 0%,#071a35 46%,#0a2447 100%)!important;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;
+  line-height:1.62;
+  letter-spacing:.01em;
+}
+body:before{
+  content:"";
+  position:fixed;inset:0;pointer-events:none;z-index:-1;
+  background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);
+  background-size:42px 42px;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.8),transparent 85%);
+}
+header{
+  position:relative;
+  overflow:hidden;
+  padding:34px 28px!important;
+  border-bottom:1px solid var(--hai-line)!important;
+  background:linear-gradient(110deg,rgba(4,18,39,.98),rgba(10,42,83,.96))!important;
+  box-shadow:0 12px 40px rgba(0,0,0,.25)!important;
+}
+header:after{
+  content:"";
+  position:absolute;left:0;right:0;bottom:0;height:3px;
+  background:linear-gradient(90deg,transparent,var(--hai-gold),var(--hai-gold-light),var(--hai-gold),transparent);
+}
+header h1{
+  margin:0!important;
+  font-size:clamp(1.75rem,3vw,2.65rem)!important;
+  font-weight:850!important;
+  letter-spacing:.035em!important;
+  color:var(--hai-ivory)!important;
+  text-shadow:0 2px 20px rgba(0,0,0,.3);
+}
+header p{
+  margin:10px 0 0!important;
+  font-size:clamp(1rem,1.5vw,1.18rem)!important;
+  color:var(--hai-muted)!important;
+}
+h1,h2,h3,h4{font-weight:800!important}
+h2{
+  font-size:clamp(1.55rem,2.5vw,2.2rem)!important;
+  color:var(--hai-ivory)!important;
+}
+h3{font-size:clamp(1.18rem,1.8vw,1.5rem)!important}
+p,li,label,input,textarea,select,button{font-size:1rem}
+button,.btn,.navBtn,.back,.langBtn{
+  min-height:48px!important;
+  border-radius:14px!important;
+  font-weight:750!important;
+  letter-spacing:.015em;
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important;
+}
+button:hover,.btn:hover,.navBtn:hover,.back:hover,.langBtn:hover{
+  transform:translateY(-2px);
+}
+.langBtn{
+  color:var(--hai-ivory)!important;
+  background:rgba(255,255,255,.055)!important;
+  border:1px solid rgba(212,175,55,.34)!important;
+  padding:10px 16px!important;
+}
+.langBtn.active{
+  color:#101010!important;
+  background:linear-gradient(135deg,var(--hai-gold-light),var(--hai-gold))!important;
+  border-color:var(--hai-gold-light)!important;
+  box-shadow:0 8px 26px rgba(212,175,55,.24)!important;
+}
+.langLabel{color:var(--hai-gold-light)!important;font-weight:800!important}
+.card,.panel,.caseCard,.roleCard,.directionCard,.courtCard,.box,.stageCard{
+  background:linear-gradient(145deg,rgba(12,40,77,.96),rgba(5,24,50,.96))!important;
+  border:1px solid var(--hai-line)!important;
+  border-radius:20px!important;
+  box-shadow:var(--hai-shadow)!important;
+  color:var(--hai-text)!important;
+}
+.caseCard,.roleCard,.directionCard{
+  padding:22px!important;
+}
+.caseCard:hover,.roleCard:hover,.directionCard:hover{
+  border-color:var(--hai-gold)!important;
+  box-shadow:0 22px 60px rgba(0,0,0,.40),0 0 0 1px rgba(212,175,55,.20)!important;
+}
+.caseCard h3,.roleCard h3,.directionCard h3,
+.caseCard strong,.roleCard strong,.directionCard strong{
+  color:var(--hai-gold-light)!important;
+}
+button.primary,.primary,.startBtn,#startBtn,#sendBtn,.goldBtn{
+  color:#111!important;
+  border:1px solid #f5df91!important;
+  background:linear-gradient(135deg,#f3dc88 0%,#d4af37 48%,#a97e19 100%)!important;
+  box-shadow:0 12px 28px rgba(212,175,55,.23)!important;
+}
+button.secondary,.secondary,.navBtn,.back{
+  color:var(--hai-ivory)!important;
+  border:1px solid rgba(212,175,55,.46)!important;
+  background:linear-gradient(145deg,rgba(18,63,120,.92),rgba(8,32,65,.96))!important;
+}
+input,textarea,select{
+  min-height:48px!important;
+  color:var(--hai-text)!important;
+  background:rgba(2,14,31,.76)!important;
+  border:1px solid rgba(212,175,55,.34)!important;
+  border-radius:14px!important;
+  padding:13px 15px!important;
+  outline:none!important;
+}
+textarea{min-height:112px!important;resize:vertical}
+input:focus,textarea:focus,select:focus{
+  border-color:var(--hai-gold)!important;
+  box-shadow:0 0 0 3px rgba(212,175,55,.13)!important;
+}
+.chat,.chatBox,#chat,#courtChat,.messages{
+  background:linear-gradient(180deg,rgba(2,15,32,.78),rgba(7,27,55,.88))!important;
+  border:1px solid rgba(212,175,55,.28)!important;
+  border-radius:20px!important;
+}
+.message,.msg,.bubble{
+  font-size:1.02rem!important;
+  line-height:1.65!important;
+}
+.badge,.tag,.pill{
+  border:1px solid rgba(212,175,55,.35)!important;
+  background:rgba(212,175,55,.10)!important;
+  color:var(--hai-gold-light)!important;
+}
+hr{border-color:rgba(212,175,55,.24)!important}
+small,.muted{color:var(--hai-muted)!important}
+a{color:var(--hai-gold-light)}
+table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  overflow:hidden;
+  border:1px solid var(--hai-line);
+  border-radius:16px;
+  background:rgba(4,22,45,.72);
+}
+th{color:#151515!important;background:linear-gradient(135deg,var(--hai-gold-light),var(--hai-gold))!important}
+td,th{padding:13px 15px!important;border-bottom:1px solid rgba(212,175,55,.15)!important}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#06162f}
+::-webkit-scrollbar-thumb{background:linear-gradient(var(--hai-gold),var(--hai-gold-deep));border-radius:20px;border:2px solid #06162f}
+
+@media(max-width:780px){
+  html{font-size:17px}
+  body{padding-bottom:env(safe-area-inset-bottom)}
+  header{padding:25px 18px!important}
+  header h1{font-size:1.75rem!important}
+  header p{font-size:1rem!important}
+  h2{font-size:1.5rem!important}
+  .caseCard,.roleCard,.directionCard,.card,.panel{padding:18px!important;border-radius:17px!important}
+  button,.btn,.navBtn,.back,.langBtn{
+    min-height:50px!important;
+    font-size:1rem!important;
+    touch-action:manipulation;
+  }
+  input,textarea,select{font-size:16px!important}
+  .message,.msg,.bubble{font-size:1rem!important}
+  .grid,.cards,.caseGrid,.roleGrid{grid-template-columns:1fr!important}
+}
+@media(min-width:1200px){
+  html{font-size:19px}
+}
+</style>
+
+</head>
+
+<body>
+<div class="langSwitch" aria-label="Til / Язык / Language"><button class="langBtn active" data-lang="uz">UZ</button><button class="langBtn" data-lang="ru">RU</button><button class="langBtn" data-lang="en">EN</button></div><div class="langLabel">Til · Язык · Language</div>
+<script>
+let currentLanguage=localStorage.getItem("huquqiy_ai_lang")||"uz";
+const V9LANG={uz:{main:"⌂ ASOSIY MENYU",cases:"▣ ISHLAR RO‘YXATI"},ru:{main:"⌂ ГЛАВНОЕ МЕНЮ",cases:"▣ СПИСОК ДЕЛ"},en:{main:"⌂ MAIN MENU",cases:"▣ CASE LIST"}};
+function setV9Language(lang){currentLanguage=["uz","ru","en"].includes(lang)?lang:"uz";localStorage.setItem("huquqiy_ai_lang",currentLanguage);document.documentElement.lang=currentLanguage;document.querySelectorAll(".langBtn").forEach(b=>b.classList.toggle("active",b.dataset.lang===currentLanguage));const x=V9LANG[currentLanguage];const h=document.getElementById("navHome"),c=document.getElementById("navCases");if(h)h.textContent=x.main;if(c)c.textContent=x.cases;}
+window.addEventListener("DOMContentLoaded",()=>{document.querySelectorAll(".langBtn").forEach(b=>b.addEventListener("click",()=>setV9Language(b.dataset.lang)));setV9Language(currentLanguage);});
+</script>
+
+
+<header>
+<h1>HUQUQIY AI — PROFESSIONAL SUD SIMULYATORI</h1>
+<p>Elektron sud amaliyoti • rolga mos protsessual trening • 60 ta o‘quv ishi</p>
+</header>
+
+<div class="container">
+
+<!-- =========================
+     BOSH SAHIFA
+========================= -->
+
+
+<div id="quickNav" class="hidden" aria-label="Sahifa navigatsiyasi">
+  <div class="quickNavLeft">
+    <button id="navBack" class="navBtn">← ORQAGA</button>
+    <button id="navHome" class="navBtn homeBtn">⌂ ASOSIY MENYU</button>
+    <button id="navCases" class="navBtn casesBtn">▣ ISHLAR RO‘YXATI</button>
+  </div>
+  <div id="navCrumb" class="navCrumb"><strong>Sud simulyatori</strong><br>Joriy bo‘lim</div>
+</div>
+
+<section id="home" class="card">
+
+<h2>Sud yurituvi yo‘nalishini tanlang</h2>
+
+<div class="grid">
+
+<div class="item" data-direction="criminal">
+<div class="icon">⚖️</div>
+<h3>Jinoyat protsessi</h3>
+<p>15 ta kazus</p>
+</div>
+
+<div class="item" data-direction="civil">
+<div class="icon">👥</div>
+<h3>Fuqarolik protsessi</h3>
+<p>15 ta kazus</p>
+</div>
+
+<div class="item" data-direction="economic">
+<div class="icon">🏢</div>
+<h3>Iqtisodiy protsess</h3>
+<p>15 ta kazus</p>
+</div>
+
+<div class="item" data-direction="administrative">
+<div class="icon">🏛️</div>
+<h3>Ma’muriy protsess</h3>
+<p>15 ta kazus</p>
+</div>
+
+</div>
+</section>
+
+
+<!-- =========================
+     KAZUSLAR
+========================= -->
+
+<section id="casesScreen" class="card hidden">
+
+<button id="backHome" class="back">
+← Orqaga
+</button>
+
+<h2 id="directionName"></h2>
+
+<p>15 ta o‘quv ishidan birini tanlang.</p>
+
+<div id="casesList" class="grid"></div>
+
+</section>
+
+
+<!-- =========================
+     TAYYORLANISH
+========================= -->
+
+<section id="prepare" class="card hidden">
+
+<button id="backCases" class="back">
+← Kazuslarga qaytish
+</button>
+
+<h2 id="caseName"></h2>
+
+<h3>📖 Ish holati</h3>
+
+<div id="caseText" class="caseText"></div>
+
+<h3>👥 Sud majlisi ishtirokchilari</h3>
+
+<div id="participants" class="participants"></div>
+
+<div class="roleSelectionShell">
+  <div class="roleSelectionHead">
+    <div><h3>⚖️ Sud majlisidagi maqomingiz</h3><p>Sud jarayonida qaysi protsessual rolni bajarishingizni tanlang.</p></div>
+    <div class="roleStepBadge">2-BOSQICH · ROL TANLASH</div>
+  </div>
+  <div id="roles" class="roles"></div>
+  <div id="roleBrief" class="privateInfo roleGuide hidden"></div>
+</div>
+
+<div class="sourcePanel">
+  <div class="sourcePanelHead"><h3>📚 Huquqiy manbalar</h3><span>Rasmiy bazalar</span></div>
+  <div class="sourceGrid">
+    <a class="sourceCard" href="https://lex.uz/" target="_blank" rel="noopener"><strong>LexUZ — Qonunchilik bazasi ↗</strong><small>Kodekslar, qonunlar, qarorlar va boshqa normativ-huquqiy hujjatlarni tekshirish.</small></a>
+    <a class="sourceCard" href="https://sud.uz/" target="_blank" rel="noopener"><strong>Oliy sud — rasmiy portal ↗</strong><small>Sud tizimi, sud amaliyoti va rasmiy sud ma’lumotlari.</small></a>
+  </div>
+</div>
+
+<h3 style="text-align:center">
+⏱ Tayyorlanish vaqti
+</h3>
+
+<div id="timer" class="timer">
+05:00
+</div>
+
+<button
+id="startCourt"
+class="primary full">
+▶ SUD JARAYONINI BOSHLASH
+</button>
+
+</section>
+
+
+<!-- =========================
+     SUD
+========================= -->
+
+<section id="court" class="card hidden">
+
+<h2 style="text-align:center">
+SUD MAJLISI ZALI — ELEKTRON BAYONNOMA
+</h2>
+
+<div id="courtInfo" class="info"></div>
+
+<div id="stageTitle" class="stage">
+Joriy bosqich
+</div>
+
+<div id="turnInfo" class="turn">
+Sud jarayoni boshlandi
+</div>
+
+<div id="chat" class="chat"></div>
+
+<div id="judgeControls" class="hidden">
+
+<h3>Sudya sifatida keyingi protsessual harakatni tanlang</h3>
+
+<div id="judgeActions" class="judgeActions"></div>
+
+</div>
+
+<div id="studentInput">
+
+<textarea
+id="answer"
+placeholder="Tanlagan rolingiz nomidan javob bering..."
+></textarea>
+
+<button id="send" class="send">
+BAYONOTNI SUDGA TAQDIM ETISH
+</button>
+
+</div>
+
+<p class="muted">
+Ctrl + Enter orqali ham javob yuborishingiz mumkin.
+</p>
+
+<button
+id="finish"
+class="primary full">
+MAJLISNI YAKUNLASH VA BAHOLASH
+</button>
+
+</section>
+
+
+<!-- =========================
+     NATIJA
+========================= -->
+
+<section id="result" class="card hidden">
+
+<h2>📊 Professional baholash</h2>
+
+<div id="totalScore" class="score">
+0/100
+</div>
+
+<div id="scoreGrid" class="scoreGrid"></div>
+
+<div
+id="generalFeedback"
+class="feedback">
+</div>
+
+<div
+id="betterFeedback"
+class="feedback better">
+</div>
+
+<div
+id="lawFeedback"
+class="feedback law">
+</div>
+
+<div class="feedback warning">
+
+<b>Eslatma:</b>
+
+ushbu versiya o‘quv simulyatoridir.
+Real sud ishi uchun normativ-huquqiy
+hujjatlarning amaldagi tahriri
+LexUZ orqali tekshirilishi lozim.
+
+</div>
+
+<button
+id="newSimulation"
+class="primary full">
+Yangi sud simulyatsiyasi
+</button>
+
+</section>
+
+</div>
+
+
+<script>
+
+/* =====================================================
+   ASOSIY YORDAMCHI FUNKSIYALAR
+===================================================== */
+
+const $ = id =>
+document.getElementById(id);
+
+const screens = [
+"home",
+"casesScreen",
+"prepare",
+"court",
+"result"
+];
+
+function showScreen(id){
+
+screens.forEach(screen => {
+$(screen).classList.add("hidden");
+});
+
+$(id).classList.remove("hidden");
+
+const qn=$("quickNav");
+if(qn){
+  qn.classList.toggle("hidden", id === "home");
+  const labels={casesScreen:"Ishlar ro‘yxati",prepare:"Ish materiallari va rol tanlash",court:"Sud majlisi zali",result:"Professional baholash"};
+  $("navCrumb").innerHTML=`<strong>${labels[id]||"Sud simulyatori"}</strong><br>${currentCase ? currentCase.title : (currentDirection && data[currentDirection] ? data[currentDirection].name : "")}`;
+  $("navCases").style.display = currentDirection ? "inline-block" : "none";
+}
+
+window.scrollTo(0,0);
+
+}
+
+
+/* =====================================================
+   KAZUSLAR
+===================================================== */
+
+const criminalTitles = [
+"Qasddan odam o‘ldirish",
+"Og‘irlashtiruvchi holatlarda qasddan odam o‘ldirish",
+"Zaruriy mudofaa holatida o‘lim yuz berishi",
+"Ehtiyotsizlik orqasida odam o‘ldirish",
+"Qasddan og‘ir tan jarohati oqibatida o‘lim",
+"O‘g‘rilik ishi",
+"Tan jarohati yetkazish",
+"Firibgarlik",
+"Yo‘l-transport hodisasi oqibatida o‘lim",
+"Talonchilik",
+"Hujjatni qalbakilashtirish",
+"Mansab vakolatidan foydalanish",
+"Bezorilik",
+"Mulkka qasddan zarar yetkazish",
+"Elektron dalilning maqbulligi"
+];
+
+const civilTitles = ["Nikohdan ajratish", "Aliment undirish", "Er-xotin mol-mulkini bo‘lish", "Qarz undirish", "Bolaning yashash joyini belgilash", "Otalikni belgilash", "Meros ulushini aniqlash", "Uy-joydan foydalanish huquqi", "Ma’naviy zarar undirish", "Oldi-sotdi shartnomasini bekor qilish", "Iste’molchi huquqlarini himoya qilish", "Yetkazilgan moddiy zararni undirish", "Bitimni haqiqiy emas deb topish", "Servitut belgilash", "Mehnat munosabatini tan olish"];
+
+const economicTitles = ["Yetkazib berish shartnomasi", "Qarzdorlikni undirish", "Pudrat shartnomasi", "Ijara nizosi", "Korporativ nizo", "Bank krediti bo‘yicha nizo", "Tovar sifati va kafolat nizosi", "Logistika shartnomasi bo‘yicha zarar", "Franshiza shartnomasi nizosi", "Aksiyadorlar qarorini nizolash", "Sug‘urta to‘lovi bo‘yicha nizo", "Elektron savdo shartnomasi", "Asossiz boylik orttirishni undirish", "Lizing shartnomasi nizosi", "Intellektual mulk nizosi"];
+
+const administrativeTitles = ["Davlat organi qaroriga shikoyat", "Mansabdor shaxs harakatiga shikoyat", "Litsenziya berishni rad etish", "Kadastr organi qarori", "Soliq organi qarori", "Davlat ro‘yxatidan o‘tkazishni rad etish", "Bojxona organi qarorini nizolash", "Qurilish ruxsatnomasini bekor qilish", "Davlat xaridi natijasini nizolash", "Ekologik ruxsat bo‘yicha qaror", "Migratsiya organi qarori", "Yer ajratish bo‘yicha ma’muriy hujjat", "Transport ruxsatnomasini rad etish", "Subsidiyani rad etish qarori", "Axborot berishni rad etish"];
+
+
+/* =====================================================
+   AGE LEGAL ENGINE — YOSH BO‘YICHA HUQUQIY TAHLIL
+   O‘quv simulyatori uchun. Aniq modda amaldagi LexUZ
+   tahriri bilan yakuniy qarordan oldin tekshiriladi.
+===================================================== */
+
+function calculateAgeOnDate(birthDate, eventDate){
+  const birth=new Date(birthDate+"T00:00:00");
+  const event=new Date(eventDate+"T00:00:00");
+  if(Number.isNaN(birth.getTime()) || Number.isNaN(event.getTime()) || event<birth) return null;
+  let years=event.getFullYear()-birth.getFullYear();
+  let months=event.getMonth()-birth.getMonth();
+  let days=event.getDate()-birth.getDate();
+  if(days<0){
+    months--;
+    const prevMonthDays=new Date(event.getFullYear(),event.getMonth(),0).getDate();
+    days+=prevMonthDays;
+  }
+  if(months<0){ years--; months+=12; }
+  return {years,months,days,label:`${years} yosh ${months} oy ${days} kun`};
+}
+
+function ageLegalEngine({caseType,birthDate,eventDate,article=null,personRole="shaxs"}){
+  const age=calculateAgeOnDate(birthDate,eventDate);
+  if(!age) return {age:null,level:"error",summary:"Yoshni hisoblash uchun sana ma’lumotlari yetarli emas.",checks:[]};
+  const y=age.years;
+  const checks=[];
+  let summary="";
+  let level="info";
+
+  if(caseType==="criminal"){
+    checks.push("JK 17-modda bo‘yicha qilmish sodir etilgan paytdagi yosh tekshiriladi.");
+    if(y<14){
+      level="critical";
+      summary=`${personRole} qilmish vaqtida ${age.label} bo‘lgan. Avvalo jinoiy javobgarlik subyekti masalasi hal qilinishi shart; JK 17-modda yosh chegaralari bo‘yicha alohida tekshiruv talab etiladi.`;
+    }else if(y<16){
+      level="critical";
+      summary=`${personRole} qilmish vaqtida ${age.label} bo‘lgan. 14–16 yosh oralig‘ida faqat JK 17-moddada maxsus ko‘rsatilgan jinoyatlar bo‘yicha javobgarlik masalasi ko‘riladi.`;
+      checks.push("Kazus kvalifikatsiyasi JK 17-moddadagi 14 yoshdan javobgarlik nazarda tutilgan moddalar ro‘yxati bilan solishtirilsin.");
+    }else if(y<18){
+      level="warning";
+      summary=`${personRole} qilmish vaqtida ${age.label} bo‘lgan va voyaga yetmagan. Umumiy javobgarlik yoshi bilan birga voyaga yetmaganlarga oid maxsus qoidalar ham qo‘llanishi tekshiriladi.`;
+      checks.push("JK Umumiy qismining voyaga yetmaganlar javobgarligiga oid maxsus qoidalari tekshirilsin.");
+    }else{
+      summary=`${personRole} qilmish vaqtida ${age.label} bo‘lgan. Yosh bo‘yicha umumiy jinoiy javobgarlik mezoni bajarilgan bo‘lishi mumkin, biroq konkret jinoyat tarkibi uchun maxsus yosh talabi mavjudligi alohida tekshiriladi.`;
+      checks.push("Ayrim jinoyat tarkiblari uchun 18 yoshga to‘lgan bo‘lish talabi mavjudligi JK 17-modda bilan tekshirilsin.");
+    }
+    if(article) checks.push(`Ko‘rsatilgan kvalifikatsiya: JK ${article}-modda. Ushbu modda uchun yosh chegarasi amaldagi tahrirda qayta tekshirilsin.`);
+  }
+
+  if(caseType==="administrative_offense"){
+    checks.push("MJtK 13–14-moddalar bo‘yicha huquqbuzarlik sodir etilgan paytdagi yosh tekshiriladi.");
+    if(y<16){ level="critical"; summary=`${personRole} huquqbuzarlik vaqtida ${age.label} bo‘lgan. Umumiy qoida bo‘yicha ma’muriy javobgarlik yoshi masalasi birinchi navbatda hal qilinadi.`; }
+    else if(y<18){ level="warning"; summary=`${personRole} huquqbuzarlik vaqtida ${age.label} bo‘lgan. 16–18 yoshdagilar uchun MJtKdagi maxsus rejim va istisnolar tekshiriladi.`; }
+    else summary=`${personRole} huquqbuzarlik vaqtida ${age.label} bo‘lgan. Yosh mezoni bilan birga konkret tarkib va boshqa shartlar tekshiriladi.`;
+  }
+
+  if(caseType==="civil" || caseType==="contract" || caseType==="economic"){
+    checks.push("FK 22 va 27-moddalari hamda kazusga tegishli maxsus normalar bo‘yicha muomala layoqati tekshiriladi.");
+    if(y<14){ level="critical"; summary=`${personRole} tegishli hodisa/bitim vaqtida ${age.label} bo‘lgan. Qonuniy vakillik va kichik yoshdagilarning bitimlari bo‘yicha maxsus qoidalar tekshirilishi shart.`; }
+    else if(y<18){ level="warning"; summary=`${personRole} tegishli hodisa/bitim vaqtida ${age.label} bo‘lgan. 14–18 yoshdagilarning muomala layoqati, yozma rozilik talab qilinishi va qonundagi mustaqil bitimlar doirasi tekshiriladi.`; }
+    else summary=`${personRole} tegishli hodisa/bitim vaqtida ${age.label} bo‘lgan. Odatda to‘la muomala layoqati mavjud, lekin maxsus holatlar va boshqa cheklovlar kazus bo‘yicha tekshiriladi.`;
+  }
+
+  if(caseType==="administrative_court"){
+    summary=`${personRole} nizoga sabab bo‘lgan hodisa vaqtida ${age.label} bo‘lgan. Yoshning protsessual layoqat, vakillik yoki nizolashilayotgan huquqqa ta’siri kazus bo‘yicha tekshiriladi.`;
+    checks.push("Ma’muriy sud ishida yoshning aynan nizolashilayotgan huquq va protsessual layoqatga ta’siri aniqlansin.");
+  }
+
+  return {age,level,summary,checks};
+}
+
+function buildPostHearingIssueReview(caseObj){
+  if(!caseObj) return "";
+  const combined=studentAnswers.map(x=>x.answer).join(" ").toLowerCase();
+  const notes=[];
+  const ageWords=["yosh","tug‘ilgan","tug'ilgan","voyaga","14 yosh","15 yosh","16 yosh","17 yosh","18 yosh","jk 17","17-modda"];
+  const evidenceWords=["dalil","vide","kamera","ekspert","guvoh","bayonnoma","maqbul","ishonchli","ziddiyat"];
+  const mentionedAge=ageWords.some(k=>combined.includes(k));
+  const mentionedEvidence=evidenceWords.some(k=>combined.includes(k));
+  if(caseObj.ageData && !mentionedAge){
+    notes.push(`<b>E’tibordan chetda qolgan fakt:</b> ish materiallaridagi tug‘ilgan sana va hodisa sanasini o‘zaro solishtirish kerak edi. Bu ma’lumot ayrim kazuslarda javobgarlik subyekti, kvalifikatsiya, maxsus protsessual kafolatlar yoki qo‘llanadigan huquqiy rejimga bevosita ta’sir qilishi mumkin.<br><br>${buildAgeAnalysis(caseObj)}`);
+  }else if(caseObj.ageData && mentionedAge){
+    notes.push(`<b>To‘g‘ri aniqlangan yo‘nalish:</b> siz shaxslarning yoshi bilan bog‘liq faktlarga e’tibor qaratdingiz. Endi bu faktni faqat umumiy qayd etish emas, aynan qilmish sodir etilgan sana va konkret huquqiy norma bilan bog‘lash muhim.`);
+  }
+  if(caseObj.evidenceDossier && !mentionedEvidence){
+    notes.push(`<b>Dalillarni baholash:</b> javoblarda ish materiallaridagi dalillarning o‘zaro mosligi, manbasi, ishonchliligi va protsessual rasmiylashtirilishi yetarlicha ochilmagan. Yakuniy pozitsiyada kamida asosiy dalillarni bir-biri bilan solishtirish kerak edi.`);
+  }
+  return notes.length ? notes.join("<br><br>") : `<b>Professional kuzatuv:</b> siz ishdagi asosiy yashirin huquqiy masalalarni ko‘tarishga harakat qildingiz. Yakuniy xulosada har bir masalani konkret fakt + dalil + norma + huquqiy oqibat zanjirida asoslash natijani yanada kuchaytiradi.`;
+}
+
+function buildAgeAnalysis(caseObj){
+  if(!caseObj || !caseObj.ageData) return "Yoshga oid ma’lumot kiritilmagan.";
+  const a=caseObj.ageData;
+  const parts=[];
+  if(a.defendantBirthDate){
+    const r=ageLegalEngine({caseType:caseObj.caseType||"criminal",birthDate:a.defendantBirthDate,eventDate:a.eventDate,article:caseObj.suggestedArticle,personRole:"Sudlanuvchi"});
+    parts.push(`<b>Sudlanuvchi:</b> ${r.summary}<br>${r.checks.map(x=>"• "+x).join("<br>")}`);
+  }
+  if(a.victimBirthDate){
+    const vAge=calculateAgeOnDate(a.victimBirthDate,a.eventDate);
+    if(vAge){
+      parts.push(`<b>Jabrlanuvchi:</b> hodisa vaqtida ${vAge.label}. Jabrlanuvchining yoshi konkret jinoyat tarkibi, himoya qilinadigan manfaat yoki maxsus norma uchun ahamiyatli bo‘lsa, kvalifikatsiyada majburiy hisobga olinadi.`);
+    }
+  }
+  if(a.claimantBirthDate){
+    const r=ageLegalEngine({caseType:caseObj.caseType||"civil",birthDate:a.claimantBirthDate,eventDate:a.eventDate,personRole:"Da’vogar/arizachi"});
+    parts.push(`<b>Da’vogar/arizachi:</b> ${r.summary}`);
+  }
+  if(a.respondentBirthDate){
+    const r=ageLegalEngine({caseType:caseObj.caseType||"civil",birthDate:a.respondentBirthDate,eventDate:a.eventDate,personRole:"Javobgar"});
+    parts.push(`<b>Javobgar:</b> ${r.summary}`);
+  }
+  return parts.join("<br><br>") || "Yoshga oid huquqiy tahlil talab qilinmadi.";
+}
+
+/* =====================================================
+   JINOYAT KAZUSINI YARATISH
+===================================================== */
+
+function createCriminalCases(){
+
+return criminalTitles.map(
+(title,index) => {
+
+const defendants = [
+"Jasur Mirzayev",
+"Kamoliddin Ortiqov",
+"Doston Xudoyberdiyev",
+"Sherzod Normurodov",
+"Akbar Tojiyev",
+"Sardor Qodirov",
+"Ulug‘bek Tursunov",
+"Temur Rahmatov",
+"Bobur Xolmatov",
+"Shoxrux Qobilov",
+"Azamat Islomov",
+"Sardor Nabiyev",
+"Jahongir Usmonov",
+"Mirjalol Saidov",
+"Saidaziz Rahimov"
+];
+
+const victims = [
+"Anvar Sodiqov",
+"Bekzod Mahmudov",
+"Oybek Hamroyev",
+"Sirojiddin Valiyev",
+"Nodir Rasulov",
+"Akmal Rahimov",
+"Diyor Ismoilov",
+"Shahnoza Aliyeva",
+"Murodjon Nazarov",
+"Nodira Ergasheva",
+"Komil Ro‘ziyev",
+"Muzaffar Komilov",
+"Umid Abdurasulov",
+"Otabek Murodov",
+"Kamron Ergashev"
+];
+
+const defendantBirthDates=[
+"2008-11-17",
+"2006-02-03",
+"2009-07-21",
+"2004-12-14",
+"2007-09-28",
+"2010-03-20",  // hodisa vaqtida 15 yosh
+"2008-01-10",  // 18 yosh
+"2009-09-01",  // 16 yosh
+"2007-05-14",  // 18 yosh
+"2011-02-10",  // 15 yosh — yosh kvalifikatsiyada juda muhim
+"2009-04-25",
+"2002-07-19",
+"2008-11-30",
+"2010-06-12",
+"2006-08-08"
+];
+
+const victimBirthDates=[
+"1999-04-11",
+"2008-06-19",
+"1987-10-03",
+"1995-01-26",
+"2006-12-05",
+"1994-06-15",
+"2009-12-20",  // voyaga yetmagan jabrlanuvchi
+"1998-03-04",
+"2012-09-17",  // voyaga yetmagan jabrlanuvchi
+"2010-01-05",  // voyaga yetmagan jabrlanuvchi
+"1991-11-11",
+"1988-04-09",
+"2007-12-01",
+"1996-02-14",
+"2009-07-07"
+];
+
+const eventDates=[
+"2026-01-12",
+"2026-01-28",
+"2026-02-06",
+"2026-02-20",
+"2026-03-02",
+"2026-02-14","2026-03-01","2026-03-18","2026-04-05","2026-04-22",
+"2026-05-10","2026-05-26","2026-06-08","2026-06-19","2026-07-03"
+];
+
+const witnesses = [
+"Mansur Yusupov",
+"Dilshod Karimov",
+"Nigora Hamidova",
+"Abror Jalilov",
+"Zafar Abduvaliyev",
+"Javohir Karimov",
+"Sanjar Abduqodirov",
+"Anvar Salimov",
+"Saidbek Rasulov",
+"Ibrohim Tursunov",
+"Bahrom Gʻaniyev",
+"Islom Xudoyberdiyev",
+"Fozil Karimov",
+"Temurbek Sobirov",
+"Suxrob Yusupov"
+];
+
+const facts = [
+
+`2026-yil 14-fevral kuni Toshkent shahridagi
+xonadondan noutbuk, telefon va
+8 500 000 so‘m pul yo‘qolgan.
+
+Sudlanuvchi hodisa vaqtida
+boshqa joyda bo‘lganini aytmoqda.
+
+Ishda videokuzatuv yozuvi,
+guvoh ko‘rsatmasi va olib qo‘yilgan
+buyum mavjud.`,
+
+`Kechki payt ikki fuqaro o‘rtasida
+janjal yuz bergan.
+
+Jabrlanuvchi tan jarohati olgan.
+
+Sudlanuvchi zaruriy mudofaa
+holatida harakat qilganini
+bildirmoqda.
+
+Tibbiy ekspertiza va videoyozuv mavjud.`,
+
+`Sudlanuvchi xizmat ko‘rsatishni
+va’da qilib jabrlanuvchidan
+32 000 000 so‘m olgan.
+
+Xizmat bajarilmagan.
+
+Jabrlanuvchi boshidan aldash
+niyati bo‘lganini aytadi.
+
+Himoya esa bu fuqarolik-huquqiy
+nizo ekanini ta’kidlaydi.`,
+
+`Piyodalar o‘tish joyi yaqinida
+avtomobil piyodani urib yuborgan.
+
+Haydovchi tezlikni oshirmaganini
+va piyoda kutilmaganda
+yo‘lga chiqqanini bildiradi.
+
+Ishda kamera yozuvi va
+avtotexnik ekspertiza mavjud.`,
+
+`Ko‘chada jabrlanuvchining
+mobil telefoni ochiq ravishda
+olib qo‘yilgan.
+
+Jabrlanuvchi sudlanuvchini
+taniganini aytmoqda.
+
+Himoya tanib olish tartibiga
+e’tiroz bildirmoqda.`,
+
+`Tashkilotga taqdim etilgan
+rasmiy hujjatning haqiqiyligi
+shubha ostiga olingan.
+
+Ekspertiza hujjatning ayrim
+qismlari o‘zgartirilganini
+ko‘rsatgan.`,
+
+`Mansabdor shaxs tanish korxonaga
+asossiz ustunlik berganlikda
+ayblanmoqda.
+
+Himoya qaror xizmat manfaatlari
+uchun qabul qilinganini bildiradi.`,
+
+`Restoranda mojaro yuz bergan.
+
+Ayblov jamoat tartibiga
+qasddan hurmatsizlik bo‘lganini
+bildirmoqda.
+
+Himoya esa shaxsiy mojaro
+bo‘lganini ta’kidlaydi.`,
+
+`Avtomobilning oynasi va kuzoviga
+zarar yetkazilgan.
+
+Sudlanuvchi zarar tasodifan
+yuz berganini bildirmoqda.
+
+Ishda kamera yozuvi va
+zarar bahosi mavjud.`,
+
+`Ayblov messenjer yozishmalariga
+dalil sifatida tayanmoqda.
+
+Himoya yozishmalarning kelib chiqishi,
+haqiqiyligi va protsessual
+rasmiylashtirilishiga
+e’tiroz bildirmoqda.`
+
+];
+
+
+const detailedDossiers=[
+`ISH MATERIALLARI — J-01/2026
+Hodisa joyi: Toshkent shahri, Shayxontohur tumani, ko‘p qavatli uy hovlisi. Hodisa vaqti: 2026-yil 12-yanvar, taxminan 22:35.
+Sudlanuvchi Jasur Mirzayev va marhum Anvar Sodiqov o‘rtasida hodisadan ikki kun oldin qarz masalasida tortishuv bo‘lgan. Telegram yozishmalarida keskin iboralar mavjud, biroq yozishmalarning bir qismi o‘chirilgan.
+Hodisa kuni ular hovlida uchrashgan. Guvoh Mansur Yusupov avval baland ovozdagi tortishuvni, keyin ikki kishining bir-biriga yaqinlashganini ko‘rgan, lekin dastlabki jismoniy harakat kim tomonidan boshlanganini aniq ko‘rmagan.
+Marhum ko‘krak sohasidan bitta sanchilgan jarohat olgan va shifoxonada vafot etgan. Sud-tibbiy ekspertiza jarohat hayotiy muhim a’zoga yetganini ko‘rsatadi.
+Sudlanuvchi pichoq o‘ziga tegishli emasligini, marhum uni birinchi bo‘lib chiqarganini va olishuv vaqtida jarohat yuz berganini aytadi. Ayblov esa hodisadan oldingi yozishmalar va sudlanuvchining uchrashuv joyiga oldindan kelganiga tayanadi.
+Hovli kamerasida voqeaning boshlanish qismi daraxt bilan to‘silgan. Keyingi 18 soniya tasvirda ikki shaxsning olishuvi ko‘rinadi. Pichoq dastasidan ikki shaxsga tegishli biologik izlar topilgan.
+Sudlanuvchi hodisa sodir etilgan vaqtda voyaga yetgan-yetmaganligi ish materiallaridagi sanalardan aniqlanadi. Barcha ism va vaziyatlar o‘quv simulyatsiyasi uchun to‘qima.`,
+`ISH MATERIALLARI — J-02/2026
+Hodisa joyi: Toshkent shahri, Sergeli tumani, ijaradagi omborxona. Vaqt: 2026-yil 28-yanvar, 20:10–20:40 oralig‘i.
+Marhum Bekzod Mahmudov omborxonada og‘ir tan jarohatlari bilan topilgan. Hodisadan oldin sudlanuvchi Kamoliddin Ortiqov, marhum va yana bir shaxs o‘rtasida avtomobil savdosidan kelib chiqqan pul nizosi bo‘lgan.
+Ayblov versiyasiga ko‘ra, marhum omborga aldab chaqirilgan va unga bir necha marta zarba berilgan. Himoya sudlanuvchi omborga kelganini tan oladi, biroq uchinchi shaxs bilan marhum o‘rtasidagi janjalni ajratishga uringanini bildiradi.
+Sud-tibbiy ekspertiza bosh va tana sohasida bir nechta jarohat qayd etgan; o‘lim bosh miya shikastlanishi bilan bog‘langan. Ikki xil predmetdan foydalanilgan bo‘lishi mumkinligi ko‘rsatilgan.
+Ombor kamerasi 19:58 da uch kishining kirganini, 20:31 da faqat ikki kishining chiqqanini qayd etgan. Audioyozuv yo‘q. Sudlanuvchining kiyimida marhumning biologik izi topilgan, himoya buni janjalni ajratish bilan izohlaydi.
+Marhumning telefoni hodisadan keyin topilmagan. Sudlanuvchi telefonni olmaganini aytadi. Ishda oldindan kelishuv, motiv, ishtirokchilik darajasi va har bir shaxsning konkret harakatlari bahsli. Barcha ism va vaziyatlar to‘qima.`,
+`ISH MATERIALLARI — J-03/2026
+Hodisa joyi: Toshkent shahri, Yashnobod tumani, xususiy uy darvozasi oldi. Vaqt: 2026-yil 6-fevral, 01:20.
+Sudlanuvchi Doston Xudoyberdiyev tunda hovliga kirgan Oybek Hamroyev bilan to‘qnashgan. Sudlanuvchi noma’lum shaxs darvozadan oshib kirgani, qo‘lida metall buyum bo‘lganini va oilasiga xavf tug‘dirganini aytadi.
+Marhumning qarindoshlari u shu manzildagi tanishini qidirib adashib kirganini bildirishgan. Hodisa joyidan metall montaj kaliti topilgan, unda marhumning barmoq izi bor.
+Sudlanuvchi ikki marta zarba berganini tan oladi. Ekspertiza o‘limga bosh sohasidagi ikkinchi zarba sabab bo‘lganini ko‘rsatadi. Kamera tasvirida birinchi zarbadan keyin marhum yerga yiqilgani, keyingi kadr esa qisman avtomobil bilan to‘silgani ko‘rinadi.
+Qo‘shni Nigora Hamidova yordam so‘ragan ovozni eshitgan, ammo kim aytganini aniqlay olmaydi. Ayblov xavf bartaraf bo‘lgandan keyingi harakatga urg‘u beradi; himoya esa vaziyat soniyalar ichida rivojlanganini va tahdid davom etgan deb qabul qilinganini ko‘rsatadi.
+Sudlanuvchi va marhumning tug‘ilgan sanalari ish materiallarida mavjud. Barcha ism va vaziyatlar o‘quv uchun to‘qima.`,
+`ISH MATERIALLARI — J-04/2026
+Hodisa joyi: Toshkent viloyati, qurilish obyekti. Vaqt: 2026-yil 20-fevral, 15:45.
+Sudlanuvchi Sherzod Normurodov kichik pudratchi brigada ishlarini boshqargan. Ishchi Sirojiddin Valiyev balandlikdan yiqilib vafot etgan.
+Hodisa kuni himoya kamari yetishmagani haqida ishchilar ertalab brigadirga xabar bergani bo‘yicha ikki xil ko‘rsatma mavjud. Bir guvoh ish to‘xtatilganini, keyin marhum o‘z tashabbusi bilan yuqoriga chiqqanini aytadi. Boshqa guvoh ishni tezlashtirish bo‘yicha og‘zaki topshiriq bo‘lganini bildiradi.
+Texnik ekspertiza vaqtinchalik platformaning bir biriktiruvchi qismi talabga javob bermaganini qayd etgan. Mehnat xavfsizligi jurnalida marhumning imzosi bor, lekin o‘sha kundagi maxsus yo‘riqnoma qatori bo‘sh.
+Sudlanuvchi xavfli holatni bilmaganini va uskunalar uchun boshqa mas’ul shaxs bo‘lganini aytadi. Ayblov uning ish jarayonini amalda boshqarganiga tayanadi.
+Sud uchun majburiyat doirasi, ehtiyot choralarini ko‘rish imkoniyati, sababiy bog‘lanish va ayb shakli muhim bahs nuqtalaridir. Barcha ism va vaziyatlar to‘qima.`,
+`ISH MATERIALLARI — J-05/2026
+Hodisa joyi: Toshkent shahri, Olmazor tumani, sport maydonchasi yonidagi yo‘lak. Vaqt: 2026-yil 2-mart, 21:05.
+Sudlanuvchi Akbar Tojiyev va Nodir Rasulov o‘rtasida futbol o‘yinidan keyin janjal kelib chiqqan. Sudlanuvchi marhumni bir marta musht bilan urganini tan oladi, biroq o‘ldirish niyati bo‘lmaganini bildiradi.
+Guvoh Zafar Abduvaliyev birinchi zarbadan keyin marhum muvozanatini yo‘qotib, beton chetga yiqilganini aytadi. Boshqa guvoh esa yiqilishdan oldin ikkinchi zarba ham bo‘lganini bildirgan.
+Sud-tibbiy ekspertiza bosh suyagi jarohati va miya shikastlanishini o‘lim sababi sifatida qayd etgan. Ekspert jarohatning to‘g‘ridan-to‘g‘ri zarbadanmi yoki yiqilishdanmi kelib chiqqanini ehtimollik asosida baholagan.
+Hodisa oldidan tomonlar orasida uzoq davom etgan adovat aniqlanmagan. Kamera yozuvi 7 soniyalik muhim qismda sifatsiz. Sudlanuvchi tez yordam chaqirishda qatnashgan va hodisa joyini tark etmagan.
+Sudda qasdning yo‘nalishi, oqibatga ruhiy munosabat, sababiy bog‘lanish va jarohat mexanizmi dalillar asosida baholanadi. Barcha ism va vaziyatlar to‘qima.`,
+
+`ISH MATERIALLARI — 01/2026
+Hodisa joyi: Toshkent shahri, Chilonzor tumani, ko‘p qavatli uy.
+Hodisa oralig‘i: 18:40–20:10. Xonadon egasi 18:35 da chiqib ketgan, 20:12 da qaytgan. Kirish eshigida buzish izi qayd etilmagan.
+Yo‘qolgan buyumlar: Lenovo noutbuk, iPhone telefon, 8 500 000 so‘m naqd pul.
+Sudlanuvchi hodisa kuni shu hududda bo‘lganini inkor etmaydi, biroq do‘sti bilan sport maydonida bo‘lganini bildiradi.
+Jabrlanuvchi sudlanuvchini avvaldan taniydi; u bir hafta oldin xonadonda mehmon bo‘lgan.
+Tergovda sudlanuvchining sumkasidan jabrlanuvchiga tegishli telefon topilgani qayd etilgan. Himoya telefon qanday tartibda olib qo‘yilganiga e’tiroz bildiradi.
+Kirish yo‘lagidagi kamera 19:21 da sudlanuvchiga o‘xshash shaxsni qayd etgan, biroq yuz tasviri to‘liq aniq emas.`,
+`ISH MATERIALLARI — 02/2026
+Hodisa joyi: Toshkent shahri, Yunusobod tumani, kafe oldi. Vaqt: 22:15 atrofida.
+Tomonlar o‘rtasidagi tortishuv avval kafe ichida boshlangan. Jabrlanuvchi yuz va yelka sohasidan jarohat olgan.
+Sudlanuvchi birinchi bo‘lib jabrlanuvchi urishga harakat qilganini, o‘zi faqat zarbani qaytarib himoyalanganini aytadi.
+Jabrlanuvchi esa sudlanuvchi tashqariga chiqib kutib turganini va mojaro davomida bir necha marta zarba berganini bildiradi.
+Kafe kamerasida mojaroning boshlanishi bor, lekin tashqaridagi 11 soniyalik qism ko‘rinmaydi.
+Sud-tibbiy ekspertiza jarohatlarning mexanizmi bo‘yicha ikki ehtimolni ko‘rsatgan. Ikki guvohning ko‘rsatmalari zarbani kim birinchi boshlagani bo‘yicha bir-biriga mos kelmaydi.`,
+`ISH MATERIALLARI — 03/2026
+Jabrlanuvchi internet orqali xizmat ko‘rsatish to‘g‘risidagi taklifga ishonib 32 000 000 so‘mni uch qismda o‘tkazgan.
+Sudlanuvchi xizmatni bajarish niyatida bo‘lganini, lekin yetkazib beruvchi bilan muammo sabab majburiyat bajarilmaganini aytadi.
+Tomonlar o‘rtasida yozma shartnoma loyihasi, Telegram yozishmalari, bank o‘tkazmalari va ikki marta qaytarilgan qisman to‘lov mavjud.
+Ayblov sudlanuvchi pul olingan paytda xizmatni bajarish uchun real imkoniyatga ega bo‘lmaganini ko‘rsatmoqda.
+Himoya esa keyinchalik yuzaga kelgan xo‘jalik tavakkali jinoyat niyatini isbotlamasligini ta’kidlaydi.
+Bir guvoh sudlanuvchining xizmatni bajarish uchun uchinchi shaxs bilan muzokara qilganini tasdiqlaydi.`,
+`ISH MATERIALLARI — 04/2026
+Hodisa: piyodalar o‘tish joyiga yaqin avtomobil-piyoda to‘qnashuvi. Vaqt 19:47, yo‘l nam, ko‘cha yoritilgan.
+Avtomobilning dastlabki tezligi ekspert hisobida 54–61 km/soat oralig‘ida baholangan. Belgilangan tezlik 60 km/soat.
+Jabrlanuvchi yo‘lni belgilangan o‘tish joyidan 7 metr narida kesib o‘tgan bo‘lishi mumkin.
+Haydovchi piyoda to‘satdan chiqqanini bildiradi. Kamera yozuvida piyoda yo‘l chetida bir necha soniya turgani ko‘rinadi.
+Tormoz izi, yo‘l qoplamasi holati, ko‘rish masofasi va avtomobil texnik holati bo‘yicha ekspert materiallari mavjud.`,
+`ISH MATERIALLARI — 05/2026
+Hodisa joyi: metro bekati yaqinidagi piyodalar yo‘lagi. Jabrlanuvchining telefoni uning qo‘lidan tortib olingan.
+Jabrlanuvchi hujum qilgan shaxsni oldindan tanishini va uni darhol taniganini aytadi.
+Sudlanuvchi hodisa vaqtida boshqa tumanda bo‘lganini bildiradi. Telefon ikki kundan keyin lombarddan topilgan.
+Lombard hujjatida boshqa ism qayd etilgan, biroq kamera tasvirida sudlanuvchiga o‘xshash shaxs mavjud.
+Tanib olish bayonnomasi, kamera yozuvi, geolokatsiya ma’lumoti va guvoh ko‘rsatmasi o‘zaro tekshirilishi kerak.`,
+`ISH MATERIALLARI — 06/2026
+Tashkilotga ishga qabul qilish uchun taqdim etilgan diplom nusxasi va ma’lumotnoma haqiqiyligi shubha ostiga olingan.
+Ekspert hujjatdagi muhr tasviri va ayrim raqamlar keyinchalik kiritilgan bo‘lishi mumkinligini ko‘rsatgan.
+Sudlanuvchi hujjatlarni vositachi orqali olganini va qalbakiligini bilmaganini aytadi.
+Vositachi topilmagan. Elektron pochta yozishmalari va to‘lov kvitansiyasi mavjud.
+Asosiy bahs: hujjatning qalbakiligi bilan birga undan foydalanish paytidagi bilim va maqsad masalasi.`,
+`ISH MATERIALLARI — 07/2026
+Mansabdor shaxs davlat tashkiloti xaridida tanishiga aloqador korxona taklifini qo‘llab-quvvatlaganlikda ayblanmoqda.
+Bayonnomalarda uchta taklif ko‘rib chiqilgani ko‘rsatilgan. G‘olib narxi eng past bo‘lmagan, ammo texnik tavsif bo‘yicha yuqori ball olgan.
+Ayblov telefon yozishmalari va manfaatlar to‘qnashuvi haqida xabar berilmaganiga tayanadi.
+Himoya qarorni komissiya kollegial qabul qilgani va real zarar aniqlanmaganini ko‘rsatadi.
+Komissiya a’zolarining ko‘rsatmalari mansabdor shaxsning ta’sir darajasi bo‘yicha farq qiladi.`,
+`ISH MATERIALLARI — 08/2026
+Restoranda ikki guruh o‘rtasida mojaro yuz bergan. Mojaro taxminan 6 daqiqa davom etgan.
+Ayblov sudlanuvchining baland ovozda haqorat qilgani, stulni uloqtirgani va boshqa mijozlarning ketishiga sabab bo‘lganini ko‘rsatadi.
+Himoya mojaro avvalgi shaxsiy kelishmovchilikdan kelib chiqqani va jamoat tartibini buzish maqsadi bo‘lmaganini bildiradi.
+Restoran kameralari, qo‘riqchi va ikki mijozning ko‘rsatmalari mavjud. Bir kamera yozuvida ovoz yo‘q.`,
+`ISH MATERIALLARI — 09/2026
+Avtomobilning old oynasi, yon eshigi va kuzoviga zarar yetgan. Baholovchi zarar miqdorini 18 400 000 so‘m deb ko‘rsatgan.
+Sudlanuvchi avtomobil yonida bo‘lganini tan oladi, biroq zarar tasodifiy yiqilish natijasida kelib chiqqanini aytadi.
+Kamera tasvirida sudlanuvchi avtomobil tomon qo‘l harakati qilgani ko‘rinadi, lekin predmet aniq ko‘rinmaydi.
+Voqeadan oldingi telefon yozishmalarida tomonlar o‘rtasida qarz bo‘yicha keskin tortishuv mavjud.
+Ekspert zararning bir nechta alohida zarba natijasida yuzaga kelgan bo‘lishi mumkinligini bildirgan.`,
+`ISH MATERIALLARI — 10/2026
+Ayblov Telegram yozishmalarining skrinshotlari va eksport qilingan chat fayliga tayanmoqda.
+Himoya skrinshotlar to‘liq emasligi, ayrim xabarlar o‘chirilgani va qurilma kimga tegishli ekani yetarli rasmiylashtirilmaganini bildiradi.
+Telefon ko‘zdan kechirilgan, ammo bayonnomada qurilmaning ayrim identifikatsiya ma’lumotlari ko‘rsatilmagan.
+Raqamli ekspertiza chat faylining yaratilish vaqtini tasdiqlaydi, lekin barcha xabarlarning muallifligini mustaqil tasdiqlamaydi.
+Guvoh ayrim yozishmalarni o‘z ko‘zi bilan ko‘rganini aytadi. Dalilning manbasi, yaxlitligi va protsessual rasmiylashtirilishi bahsli.`
+];
+
+const evidenceDossiers=[
+["Hodisa joyini ko‘zdan kechirish bayonnomasi","Hovli videoyozuvi","Sud-tibbiy ekspertiza","Pichoq va biologik izlar ekspertizasi","Telegram yozishmalari","Guvoh Mansur Yusupov ko‘rsatmasi","Tez yordam va shifoxona hujjatlari"],
+["Ombor kamera yozuvi","Sud-tibbiy ekspertiza","Biologik izlar ekspertizasi","Telefon trafik ma’lumotlari","Pul nizosiga oid yozishmalar","Ikki guvoh ko‘rsatmasi","Hodisa joyidagi predmetlar"],
+["Hovli kamera yozuvi","Metall buyum va daktiloskopiya","Sud-tibbiy ekspertiza","Qo‘shni guvoh ko‘rsatmasi","Hodisa joyi sxemasi","Sudlanuvchining dastlabki ko‘rsatmasi","112 chaqiruv qaydi"],
+["Texnik ekspertiza","Mehnat xavfsizligi jurnali","Obyekt videoyozuvi","Ishchilar ko‘rsatmalari","Lavozim va vazifa hujjatlari","Platforma fotosuratlari","Tez yordam hujjatlari"],
+["Sud-tibbiy ekspertiza","Sport maydonchasi kamerasi","Ikki guvohning qarama-qarshi ko‘rsatmalari","112 chaqiruv qaydi","Hodisa joyi fotosuratlari","Telefon yozishmalari","Sudlanuvchining hodisadan keyingi harakatlari"],
+
+["Hodisa joyini ko‘zdan kechirish bayonnomasi","Kirish yo‘lagi videoyozuvi (19:21)","Telefonni olib qo‘yish bayonnomasi","Telefon IMEI ma’lumoti","Jabrlanuvchining xarid hujjati","Guvoh Javohir Karimov ko‘rsatmasi","Sudlanuvchining alibi haqidagi tushuntirishi"],
+["Kafe ichki kamera yozuvi","Sud-tibbiy ekspertiza xulosasi","Guvoh A ko‘rsatmasi","Guvoh B ko‘rsatmasi","Tez yordam qaydi","Tomonlarning dastlabki tushuntirishlari"],
+["Bank o‘tkazmalari","Telegram yozishmalari","Shartnoma loyihasi","Qisman qaytarilgan to‘lovlar","Guvoh ko‘rsatmasi","Yetkazib beruvchi bilan yozishmalar"],
+["Yo‘l kamerasi yozuvi","Avtotexnik ekspertiza","Tormoz izi o‘lchovi","Yo‘l sxemasi","Tibbiy hujjatlar","Haydovchi va guvoh ko‘rsatmalari"],
+["Tanib olish bayonnomasi","Lombard hujjati","Lombard kamerasi","Telefon IMEI ma’lumoti","Geolokatsiya ma’lumoti","Jabrlanuvchi ko‘rsatmasi"],
+["Hujjatshunoslik ekspertizasi","Diplom nusxasi","Ma’lumotnoma","Elektron pochta yozishmalari","To‘lov kvitansiyasi","Sudlanuvchi tushuntirishi"],
+["Xarid komissiyasi bayonnomalari","Taklif va narx jadvallari","Telefon yozishmalari","Manfaatlar to‘qnashuvi hujjatlari","Komissiya a’zolari ko‘rsatmalari","Audit ma’lumoti"],
+["Restoran kamera yozuvlari","Qo‘riqchi ko‘rsatmasi","Ikki mijoz ko‘rsatmasi","Zarar qaydi","Tomonlarning oldingi yozishmalari"],
+["Kamera yozuvi","Baholovchi xulosasi","Ekspert xulosasi","Telefon yozishmalari","Avtomobil fotosuratlari","Guvoh ko‘rsatmasi"],
+["Telegram skrinshotlari","Chat eksport fayli","Telefonni ko‘zdan kechirish bayonnomasi","Raqamli ekspertiza xulosasi","Qurilma ma’lumotlari","Guvoh ko‘rsatmasi"]
+];
+
+const criminalSupplement = [
+  "QO‘SHIMCHA ISH MATERIALLARI:\nHodisa joyini ko‘zdan kechirish bayonnomasida qon dog‘larining joylashuvi, pichoqning topilgan nuqtasi va taraflar turgan taxminiy masofa qayd etilgan. 112 xizmatiga qo‘ng‘iroq 22:38 da tushgan. Sudlanuvchining telefonidagi geolokatsiya 22:11 dan 22:42 gacha ayni hududni ko‘rsatadi. Himoya geolokatsiya faqat hududni tasdiqlashi, qasdni isbotlamasligini bildiradi. Ayblov esa oldingi yozishmalar, uchrashuvga kelish va hodisadan keyingi xatti-harakatlarni birgalikda baholashni so‘raydi. Guvohning tergovdagi birinchi ko‘rsatmasi bilan keyingi ko‘rsatmasida masofa va yoritilish bo‘yicha farq bor. Sud bu tafovut sababini bevosita so‘roq orqali aniqlashi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nOmbor kirish kartasi jurnali uchinchi shaxsning kartasi 19:54 da ishlatilganini ko‘rsatadi. Sudlanuvchi telefonidan hodisadan uch soat oldin marhumga ikki marta qo‘ng‘iroq qilingan. Bank ko‘chirmalarida taraflar o‘rtasida katta miqdordagi qarz harakati ko‘rinadi. Ekspert ikki xil jarohat vositasi ehtimolini qayd etgan, ammo qaysi zarba aynan kim tomonidan berilganini aniqlamagan. Ayblov oldindan kelishuv va birgalikdagi harakatni isbotlashga urinadi; himoya individual javobgarlik va konkret sababiy bog‘lanishni talab qiladi. Hodisadan keyin kiyim almashtirilgani bo‘yicha ham bahs mavjud.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nDarvoza qulfida tashqaridan mexanik ta’sir izi bor. Marhumning qonidagi alkogol miqdori ekspertiza bilan aniqlangan. Sudlanuvchining voyaga yetmagan singlisi tergovda baland ovoz va darvoza urilganini eshitganini aytgan, biroq hodisaning o‘zini ko‘rmagan. Birinchi zarbadan keyingi vaziyat, xavf davom etgan-etmaganligi va ikkinchi harakatning zarurligi taraflar o‘rtasidagi markaziy bahsdir. Hodisa soniyalar ichida kechgani sabab videoni kadrma-kadr tekshirish talab etiladi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nObyekt bo‘yicha mehnatni muhofaza qilish uchun mas’ul shaxs tayinlangan buyruq mavjud, biroq amalda topshiriqlarni kim bergani yuzasidan ishchilar turlicha ko‘rsatma bergan. Platforma bir kun oldin ko‘chirilgan. Ta’minotchi yuborgan xavfsizlik kamarlari omborga hodisadan keyin kelgan. Sudlanuvchi ertalabki yig‘ilishda balandlikdagi ishni to‘xtatganini aytadi; ikki ishchi esa muddat qisqaligi sabab ish davom ettirilganini bildiradi. Sud majburiyat doirasi, oldindan ko‘ra bilish imkoniyati va aynan qaysi harakatsizlik oqibat bilan bog‘langanini aniqlashi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nTez yordam chaqiruvi sudlanuvchining telefonidan qilingan. Hodisadan 20 daqiqa oldingi yozishmalarda tomonlar bir-birini haqorat qilgani ko‘rinadi, ammo oldindan uchrashib mushtlashish haqida kelishuv aniqlanmagan. Ekspert bosh suyagi jarohatining beton qirraga urilish bilan mos kelishini qayd etgan. Guvohlardan biri ikkinchi zarbani ko‘rganini aytsa, uning turgan joyidan ko‘rish imkoniyati sxema bo‘yicha cheklangan. Sud qasd nimaga qaratilgani va og‘ir oqibatga ruhiy munosabatni dalillar yig‘indisidan aniqlaydi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nXonadon eshigida buzish izi yo‘qligi sabab kalitdan foydalanish ehtimoli tekshirilgan. Sudlanuvchi avval mehmon bo‘lgan paytda kalit turgan joyni ko‘rgan bo‘lishi mumkin. Telefonni olib qo‘yish bayonnomasida xolislarning kelish vaqti bilan videoyozuv vaqti o‘rtasida tafovut mavjud. Sport maydonidagi ikki tanish sudlanuvchini taxminan 19:00 gacha ko‘rgan, keyingi vaqt bo‘yicha aniq ma’lumot bera olmaydi. Noutbuk topilmagan. Sud alibi, tanib olish, olib qo‘yishning protsessual tartibi va ashyoviy dalilning kelib chiqishini tekshiradi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nKafe ichidagi yozuvda jabrlanuvchi birinchi bo‘lib stoldan turib sudlanuvchiga yaqinlashgani ko‘rinadi. Tashqarida kamera ko‘rmaydigan nuqta mavjud. Jabrlanuvchining kiyimida yirtiq, sudlanuvchining bilagida tirnalish qayd etilgan. Guvohlarning biri jabrlanuvchining qo‘lida shisha bo‘lganini aytadi, ikkinchisi buni inkor etadi. Shisha hodisa joyidan topilgan, lekin undan yaroqli barmoq izi olinmagan. Sud zaruriy mudofaa, hujumning real xususiyati va qo‘llangan kuchning vaziyatga mosligini faktlardan aniqlashi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nBank o‘tkazmalari uch xil hisobga tushgan, ulardan bittasi sudlanuvchining qarindoshiga tegishli. Sudlanuvchi bu hisob yetkazib beruvchiga to‘lov qilish uchun ishlatilganini bildiradi. Yetkazib beruvchi bilan tuzilgan elektron buyurtma hodisadan oldin yaratilgan, lekin uning haqiqiyligi yuzasidan ekspert tekshiruvi tayinlangan. Jabrlanuvchiga ikki marta kichik summa qaytarilgan. Sud pul olingan paytdagi niyatni keyingi bajarilmaslik faktidan avtomatik xulosa qilmasdan, barcha holatlar bilan tekshirishi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nAvtotexnik ekspertiza ikki ssenariy tuzgan: piyoda kamera qayd etgan nuqtadan harakatlangan bo‘lsa, haydovchida tormozlash imkoniyati bo‘lgan; piyoda tez yugurib chiqqan bo‘lsa, to‘qnashuvning oldini olish texnik jihatdan qiyin bo‘lgan. Avtomobil registratori hodisadan 40 soniya oldin o‘chgan. Haydovchi telefonidan hodisa vaqtiga yaqin messenjer faolligi aniqlangan, ammo uni aynan haydovchi ishlatgani bahsli. Sud tezlik, diqqat, piyodaning xatti-harakati va sababiy bog‘lanishni birgalikda baholaydi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nLombarddagi buyumni topshirgan shaxs pasport nusxasidan foydalangan, hujjatdagi surat sifati past. Kamera yozuvida kiyim va tana tuzilishi sudlanuvchiga o‘xshaydi, yuz to‘liq ko‘rinmaydi. Jabrlanuvchi dastlabki arizasida hujumchini “tanishga o‘xshadi” degan, keyingi tanib olishda esa qat’iy ko‘rsatgan. Sudlanuvchi telefonining bazaviy stansiya ma’lumoti hodisa hududidan bir necha kilometr uzoq joyni ko‘rsatadi. Sud tanib olishning ishonchliligi, alibi va elektron dalil chegaralarini tekshiradi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nDiplom raqami bo‘yicha ta’lim muassasasidan kelgan javobda bunday seriya boshqa shaxsga berilgani ko‘rsatilgan. Sudlanuvchi vositachiga pul o‘tkazgan kvitansiyani taqdim etgan. Elektron yozishmada “hammasi rasmiy bo‘ladi” degan ibora bor, lekin qalbakilashtirish haqida bevosita gap yo‘q. Ish beruvchi vakili hujjat aynan ishga qabul qilishda taqdim etilganini tasdiqlaydi. Sud qalbaki hujjatni tayyorlash, olish va undan foydalanish harakatlarini hamda sudlanuvchining xabardorligini alohida baholashi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nXarid komissiyasi bayonnomasida sudlanuvchi ovoz bergan, ammo yakka o‘zi qaror qabul qilmagan. G‘olib korxona rahbari bilan sudlanuvchining qarindoshlik aloqasi mavjudligi bo‘yicha ma’lumot tekshirilmoqda. Texnik komissiya ikki talabgorni mezonlarga mos emas deb topgan. Ayblov ayrim mezonlar tender e’lonidan keyin aniqlashtirilganiga tayanadi. Himoya qaror kollegial bo‘lganini va tashkilot zarar ko‘rmaganini bildiradi. Sud vakolat doirasi, manfaatdorlik, oqibat va qasdni dalillar asosida ajratishi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nRestoran ma’muri mojaro shaxsiy haqoratdan boshlanganini bildiradi. Keyinchalik stul ag‘darilgan, boshqa mijozlar tarqalgan va qo‘riqchi aralashgan. Kamera tasvirida sudlanuvchining bir necha bor qaytib kelgani ko‘rinadi. Himoya u do‘stini olib chiqishga uringanini aytadi. Ikki mijoz jamoat tartibi jiddiy buzilganini, yana biri esa mojaro faqat ikki guruh o‘rtasida bo‘lganini bildirgan. Sud harakatning motivi, jamoatga munosabati va zo‘rlik darajasini ajratishi kerak.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nAvtomobil egasi bilan sudlanuvchi o‘rtasida oldindan mulkiy nizo bo‘lgan. Kamera yozuvida sudlanuvchi avtomobil yonida ko‘rinadi, ammo oynaning aynan sindirilish lahzasi kadrdan tashqarida. Qo‘lqopdan shisha mikrozarralari topilgan, himoya qo‘lqop avtomobil ta’mirida avval ishlatilganini aytadi. Baholovchi zarar miqdorini hisoblagan, ikkinchi mutaxassis esa ayrim shikastlar eski bo‘lishi mumkinligini bildiradi. Sud qasd, aynan qaysi zarar hodisada yuz bergani va miqdorni tekshiradi.",
+  "QO‘SHIMCHA ISH MATERIALLARI:\nMessenjer eksport fayli tergovchining kompyuteriga ko‘chirilgan, lekin dastlabki qurilmaning to‘liq kriminalistik nusxasi olinmagan. Skrinshotlarda yuboruvchi nomi ko‘rinadi, telefon raqami barcha kadrda aks etmagan. Telekom ma’lumoti akkauntga bog‘langan raqamni tasdiqlaydi. Himoya ayrim xabarlar tahrirlangan yoki kontekstdan uzilgan bo‘lishi mumkinligini bildiradi. Qarshi tomon esa boshqa mustaqil dalillar mazmunni tasdiqlashini ko‘rsatadi. Sud elektron dalilning manbasi, yaxlitligi, olish tartibi va boshqa dalillar bilan mosligini tekshiradi."
+];
+
+return {
+
+title,
+
+caseType:"criminal",
+
+ageData:{
+ eventDate:eventDates[index],
+ defendantBirthDate:defendantBirthDates[index],
+ victimBirthDate:victimBirthDates[index]
+},
+
+roles:[
+"Sudya",
+"Prokuror",
+"Himoyachi",
+"Sudlanuvchi",
+"Jabrlanuvchi"
+],
+
+people:{
+
+judge:"Dilshod Ergashev",
+
+clerk:"Mohira Aliyeva",
+
+prosecutor:"Kamola Usmonova",
+
+defense:"Bekzod Rasulov",
+
+defendant:defendants[index],
+
+victim:victims[index],
+
+victimLawyer:"Madina Valiyeva",
+
+witness:witnesses[index],
+
+expert:"Rustam Sobirov"
+
+},
+
+facts:
+detailedDossiers[index] + `\n\n` + criminalSupplement[index]
++
+`
+
+Sudlanuvchi: ${defendants[index]}
+Tug‘ilgan sana: ${defendantBirthDates[index]}
+Jabrlanuvchi: ${victims[index]}
+Tug‘ilgan sana: ${victimBirthDates[index]}
+Hodisa sanasi: ${eventDates[index]}
+
+
+Barcha ism-shariflar va vaziyatlar
+o‘quv simulyatsiyasi uchun to‘qima.`,
+
+evidenceDossier:evidenceDossiers[index],
+
+roleBriefs:{
+
+"Sudya":
+`Siz ishni xolis boshqarishingiz kerak.
+
+Sizning vazifangiz:
+— majlisni protsessual tartibda olib borish;
+— ishtirokchilarni aniqlash;
+— huquqlarni tushuntirish;
+— iltimosnomalarni ko‘rib chiqish;
+— dalillarni tekshirish;
+— taraflarga teng imkoniyat berish;
+— protsessual ketma-ketlikni saqlash;
+
+Siz taraflardan birining pozitsiyasini
+himoya qilmasligingiz kerak.`,
+
+"Prokuror":
+`Siz davlat ayblovchisisiz.
+
+Siz:
+— ayblovni bayon qilasiz;
+— dalillarga tayanasiz;
+— sudlanuvchi, jabrlanuvchi va
+guvohlarga savollar berishingiz mumkin;
+— himoya e’tirozlariga javob berasiz;
+— yakuniy sud nutqida ayblov
+pozitsiyasini huquqiy asoslab berasiz.`,
+
+"Himoyachi":
+`Siz sudlanuvchining himoyachisisiz.
+
+Sudlanuvchi sizning AI-mijozingiz.
+
+Siz uning o‘rniga shaxsiy savollarga
+javob bermaysiz.
+
+Siz:
+— ayblov dalillarini tekshirasiz;
+— maqbullik va ishonchlilikka
+e’tiroz bildirishingiz mumkin;
+— guvohlarga savol berasiz;
+— himoya pozitsiyasini shakllantirasiz;
+— sudlanuvchi foydasiga bo‘lgan
+holatlarni ko‘rsatasiz.`,
+
+"Sudlanuvchi":
+`Siz sudlanuvchisiz.
+
+Himoyachingizni AI boshqaradi.
+
+Sud sizga shaxsan savol berganda
+o‘zingiz javob berasiz.
+
+Siz:
+— shaxsingizga oid ma’lumotlarni aytasiz;
+— ayblovga munosabat bildirasiz;
+— voqea haqidagi o‘z versiyangizni
+tushuntirasiz;
+— kerak bo‘lsa savollarga javob berasiz;
+— yakunda so‘nggi so‘z aytasiz.`,
+
+"Jabrlanuvchi":
+`Siz jabrlanuvchisiz.
+
+Siz:
+— hodisa bo‘yicha o‘zingiz bilgan
+holatlarni aytasiz;
+— yetkazilgan zararni tushuntirasiz;
+— sud savollariga javob berasiz;
+— kerak bo‘lsa dalillarga
+munosabat bildirasiz.
+
+Jabrlanuvchi vakilini AI boshqaradi.`
+
+},
+
+witnessKnowledge:
+`Guvoh hodisaning faqat o‘zi bevosita ko‘rgan yoki eshitgan qismlari haqida javob beradi.
+U bilmagan faktlarni taxmin qilmaydi. Ko‘rsatmasi boshqa dalillar bilan mos kelmasligi mumkin va talaba bu ziddiyatni sudda tekshirishi kerak.`,
+
+lawTopics:
+[
+"protsessual tartib",
+"dalillarni tekshirish",
+"dalillarning maqbulligi va ishonchliligi",
+"taraflarning protsessual huquqlari",
+"kazusga tegishli moddiy-huquqiy norma"
+]
+
+};
+
+});
+
+}
+
+
+/* =====================================================
+   BOSHQA PROTSESSLAR
+===================================================== */
+
+function createOtherCases(type,titles){
+
+return titles.map(
+(title,index) => {
+
+let roles=[];
+
+if(type==="civil"){
+
+roles=[
+"Sudya",
+"Da’vogar",
+"Javobgar",
+"Da’vogar vakili",
+"Javobgar vakili"
+];
+
+}
+
+if(type==="economic"){
+
+roles=[
+"Sudya",
+"Da’vogar vakili",
+"Javobgar vakili",
+"Korxona rahbari"
+];
+
+}
+
+if(type==="administrative"){
+
+roles=[
+"Sudya",
+"Arizachi",
+"Arizachi vakili",
+"Ma’muriy organ vakili"
+];
+
+}
+
+
+return {
+
+title,
+
+caseType:type==="civil" ? "civil" : (type==="economic" ? "economic" : "administrative_court"),
+
+ageData:{
+ eventDate:`2026-${String((index%9)+1).padStart(2,"0")}-15`,
+ claimantBirthDate:index===7 ? "2009-05-20" : "1992-04-12",
+ respondentBirthDate:index===7 ? "2008-08-10" : "1989-09-23"
+},
+
+roles,
+
+people:{
+
+judge:"Dilshod Ergashev",
+
+clerk:"Mohira Aliyeva",
+
+claimant:"Akmal Rahimov",
+
+respondent:"Sardor Qodirov",
+
+claimantLawyer:"Bekzod Rasulov",
+
+respondentLawyer:"Kamola Usmonova",
+
+applicant:"Akmal Rahimov",
+
+applicantLawyer:"Bekzod Rasulov",
+
+authority:"Kamola Usmonova",
+
+director:"Sardor Qodirov",
+
+witness:"Javohir Karimov"
+
+},
+
+facts:
+({
+  civil: ["F-01/2026. Nikohdan ajratish ishi. Da’vogar nikoh munosabatlari amalda 10 oydan beri tugaganini, taraflar alohida yashayotganini bildiradi. Ikki nafar farzand bor. Javobgar oilani saqlab qolish mumkinligini aytadi va ajrashishga qarshi. Ishda mahalla dalolatnomasi, bolalar maktabidan ma’lumot, taraflarning yashash manzili haqidagi hujjatlar va oilaviy xarajatlar bo‘yicha bank ko‘chirmalari mavjud. Taraflar yarashish imkoniyati, bolalar manfaatlari va birga yashashning amalda davom etayotgan-etmaganligi bo‘yicha turlicha tushuntirish beradi. Katta farzand ota-onaning nizolariga guvoh bo‘lgan, lekin uni taraflardan birini tanlashga majburlash mumkin emas. Sud talab doirasi va protsessual masalalarni mustaqil aniqlaydi.", "F-02/2026. Aliment undirish. Da’vogar voyaga yetmagan ikki farzand uning qaramog‘ida ekanini, javobgar muntazam yordam bermayotganini bildiradi. Javobgar norasmiy daromadlari o‘zgaruvchanligini va ayrim xarajatlarni bevosita bolalar uchun to‘laganini aytadi. Bank ko‘chirmalari, maktab va tibbiy xarajatlar, pul o‘tkazmalari, ish joyidan ma’lumot va messenjer yozishmalari mavjud. Ayrim to‘lovlarning maqsadi hujjatda ko‘rsatilmagan. Sud bolalarning ta’minot ehtiyoji, taraflarning daromadlari va talabning huquqiy asosini tekshiradi.", "F-03/2026. Er-xotin mol-mulkini bo‘lish. Nikoh davrida kvartira va avtomobil olingan. Kvartira javobgar nomida, avtomobil esa keyinchalik uchinchi shaxsga sotilgan. Da’vogar boshlang‘ich badalga o‘zining nikohdan oldingi jamg‘armasi sarflanganini aytadi. Javobgar kvartira ota-onasining puliga olinganini bildiradi. Bank o‘tkazmalari, oldi-sotdi shartnomalari, ta’mirlash cheklari, kredit to‘lovlari va guvoh ko‘rsatmalari mavjud. Ayrim to‘lovlar naqd amalga oshirilgan. Sud mulkning huquqiy rejimi va ulushlarga ta’sir qiluvchi faktlarni dalillar bilan aniqlaydi.", "F-04/2026. Qarz undirish. Da’vogar javobgarga 120 million so‘m berganini va qaytarish muddati o‘tganini aytadi. Qo‘lda yozilgan tilxat mavjud, javobgar imzo o‘ziniki ekanini tan oladi, biroq pulning bir qismi qaytarilganini bildiradi. Da’vogar buni inkor etadi. Bankdan 40 million so‘mlik o‘tkazma topilgan, izoh qismida qarz haqida yozilmagan. Messenjerda “qolganini keyingi oy beraman” degan xabar bor, uning konteksti bahsli. Sud majburiyat hajmi, bajarilgan qism va dalillarning o‘zaro bog‘liqligini tekshiradi.", "F-05/2026. Bolaning yashash joyini belgilash. Ota va ona alohida yashaydi, 9 yoshli bola hozir ona bilan. Ota uy-joy va maktab sharoiti yaxshiroq ekanini, ona esa bola tug‘ilganidan beri asosan uning parvarishida bo‘lganini aytadi. Vasiylik organi xulosasi, maktab tavsifnomasi, yashash sharoiti dalolatnomalari va ota-onaning ish rejimi haqidagi ma’lumotlar mavjud. Bola bilan suhbat masalasida uning manfaatlari va bosimdan himoya qilinishi muhim. Sud ota-onalarning faqat moddiy imkoniyatini emas, ishdagi barcha holatlarni baholaydi."],
+  economic: ["I-01/2026. Yetkazib berish shartnomasi. Da’vogar 480 million so‘mlik mahsulotning 35 foizi kech yetkazilganini va bir qismi sifat talabiga mos kelmaganini bildiradi. Javobgar kechikish transport cheklovi sabab bo‘lganini, da’vogar esa mahsulotni e’tirozsiz qabul qilganini aytadi. Shartnoma, spetsifikatsiya, qabul qilish dalolatnomalari, elektron hisob-fakturalar, sifat ekspertizasi va tomonlarning email yozishmalari mavjud. Dalolatnomalardan bittasida e’tiroz qayd etilmagan, keyingi kuni esa nuqson haqida xat yuborilgan. Sud majburiyatning mazmuni, buzilish va talab qilingan zarar/penya asoslarini tekshiradi.", "I-02/2026. Qarzdorlikni undirish. Da’vogar bajarilgan xizmatlar uchun 310 million so‘m qarz qolganini aytadi. Javobgar xizmatlarning bir qismi amalda bajarilmaganini va hisob-kitob dalolatnomasi vakolatsiz xodim tomonidan imzolanganini bildiradi. Shartnoma, aktlar, elektron yozishmalar, server jurnallari va to‘lov topshiriqnomalari mavjud. Ikki oy uchun akt imzolangan, uchinchi oy bo‘yicha faqat elektron tasdiq bor. Sud vakolat, xizmatning real bajarilishi va qarz miqdorini tekshiradi.", "I-03/2026. Pudrat shartnomasi. Buyurtmachi qurilish ishlarida nuqsonlar borligi sabab yakuniy 900 million so‘m to‘lovni ushlab qolgan. Pudratchi obyekt foydalanishga qabul qilinganini va nuqsonlarning keyingi noto‘g‘ri ekspluatatsiyadan kelib chiqqanini aytadi. Texnik ekspertiza, ish jurnallari, yashirin ishlar dalolatnomasi, fotosuratlar va kafolat yozishmalari mavjud. Ekspertiza ayrim nuqsonlarning sababini aniq ajrata olmagan. Sud ish sifati, qabul qilish oqibati, kafolat va qarshi talablarni tekshiradi.", "I-04/2026. Ijara nizosi. Ijaraga beruvchi olti oylik ijara haqi va penya talab qiladi. Ijarachi bino uch oy davomida foydalanishga yaroqsiz bo‘lganini, elektr quvvati shartnomadagi ko‘rsatkichga yetmaganini bildiradi. Kommunal dalolatnomalar, yozishmalar, to‘lovlar va bino holati fotosuratlari mavjud. Ijarachi kalitni qaytarmagan, ammo faoliyatini vaqtincha boshqa joyga ko‘chirgan. Sud foydalanish imkoniyati, taraflarning majburiyatlari va hisob-kitob davrini aniqlaydi.", "I-05/2026. Korporativ nizo. MChJ ishtirokchisi umumiy yig‘ilish qarorini haqiqiy emas deb topishni so‘raydi. U yig‘ilish haqida o‘z vaqtida xabardor qilinmaganini va ulushni kamaytirgan qaror uning ishtirokisiz qabul qilinganini bildiradi. Jamiyat pochta jo‘natmasi, email va messenjer orqali xabar berilganini aytadi. Ustav, yig‘ilish bayonnomasi, ovoz berish natijalari, pochta kvitansiyasi va serverdagi email loglari mavjud. Sud chaqirish tartibi, kvorum, vakolat va qarorning ishtirokchi huquqlariga ta’sirini tekshiradi."],
+  administrative: ["M-01/2026. Davlat organi qaroriga shikoyat. Arizachi qurilish obyektidan foydalanishga ruxsat berishni rad etgan qarorni nizolaydi. Organ yong‘in xavfsizligi bo‘yicha xulosa yetishmaganini bildiradi. Arizachi xulosa ariza topshirilgan kuni elektron tizimga yuklanganini ko‘rsatadi. Elektron portal jurnali, rad etish qarori, topshirilgan hujjatlar ro‘yxati va idoralararo yozishmalar mavjud. Qarorda ayrim faktik asoslar umumiy ifodalangan. Sud organning vakolati, protsedura va qarorning yetarli asoslanganligini tekshiradi.", "M-02/2026. Mansabdor shaxs harakatiga shikoyat. Arizachi savdo obyektida o‘tkazilgan tekshiruv vaqtida hujjatlar protsessual tartibga rioya qilmasdan olib qo‘yilganini aytadi. Organ tekshiruv qonuniy topshiriq asosida o‘tkazilganini bildiradi. Tekshiruv buyrug‘i, bayonnoma, videoyozuv, olib qo‘yilgan hujjatlar ro‘yxati va tadbirkorning e’tirozi mavjud. Bayonnomadagi vaqt bilan kamera vaqti mos kelmaydi. Sud harakatning vakolat va tartibga muvofiqligini baholaydi.", "M-03/2026. Litsenziya berishni rad etish. Arizachi barcha talablarni bajarganini, rad javobida esa ilgari ko‘rsatilmagan kamchilik keltirilganini bildiradi. Organ mutaxassislar malakasi haqidagi hujjatlardan biri talabga mos emasligini aytadi. Portal orqali yuborilgan fayllar, malaka sertifikatlari, idoraning so‘rovlari va rad etish xati mavjud. Arizachiga kamchilikni bartaraf etish imkoniyati berilgan-berilmagani bahsli. Sud protsedura, teng munosabat va qarorning asosini tekshiradi.", "M-04/2026. Kadastr organi qarori. Arizachi yer uchastkasi chegarasi elektron bazada o‘zgartirilgani sabab mulkidan foydalanish cheklanganini bildiradi. Organ bu texnik xatoni tuzatish jarayoni bo‘lganini aytadi. Eski kadastr hujjatlari, yangi koordinatalar, geodezik o‘lchov, qo‘shni mulkdorning hujjatlari va idora yozishmalari mavjud. Ikki o‘lchov natijasida 18 kvadrat metr farq chiqqan. Sud ma’muriy hujjatning asosi, manfaatdor shaxsni tinglash va faktik ma’lumotlarning ishonchliligini tekshiradi.", "M-05/2026. Soliq organi qarori. Korxona qo‘shimcha soliq va moliyaviy sanksiya hisoblangan qarorni nizolaydi. Soliq organi ayrim kontragentlar bilan operatsiyalar real emasligini bildiradi. Korxona tovarlar amalda yetkazilganini, ombor va transport hujjatlari mavjudligini ko‘rsatadi. Elektron hisob-fakturalar, bank to‘lovlari, ombor kirimlari, GPS ma’lumotlari va tekshiruv dalolatnomasi mavjud. Ayrim kontragent rahbarlari so‘rovda operatsiyani eslay olmagan. Sud qarorning faktik va huquqiy asoslarini, tekshiruv materiallari hamda arizachi taqdim etgan dalillarni tekshiradi."]
+})[type][index] || `${type.toUpperCase()}-${String(index+1).padStart(2,"0")}/2026. ${title}. Ushbu o‘quv ishida taraflar voqeaning asosiy faktlari, hujjatlarning mazmuni va huquqiy oqibatlari bo‘yicha qarama-qarshi pozitsiyada. Ish materiallarida shartnoma yoki ma’muriy hujjat, elektron yozishmalar, to‘lov yoki ro‘yxat ma’lumotlari, kamida bitta qarshi dalil va protsessual hujjat mavjud. Taraflardan biri asosiy hujjatning ishonchliligi, vakolat yoki muddat masalasini nizolaydi. Guvoh yoki mutaxassis mavjud bo‘lsa, u faqat bevosita bilgan doirada javob beradi. Sud dalillarni alohida va yig‘indida tekshiradi; yashirin huquqiy muammoni talaba mustaqil aniqlashi kerak.
+
+Kazus №${index+1}. Barcha ism-shariflar va vaziyatlar o‘quv simulyatsiyasi uchun to‘qima.`,
+
+evidenceDossier:
+type==="civil"
+? `DALILLAR PAPKASI:
+1. Da’vo arizasi va unga ilovalar.
+2. Taraflarning yozma tushuntirishlari.
+3. Shartnoma, FHDYO, bank yoki mulkka oid tegishli hujjatlar.
+4. Elektron yozishmalar va to‘lov ma’lumotlari.
+5. Guvoh ko‘rsatmasi yoki vakolatli organ xulosasi.
+6. Qarshi taraf taqdim etgan e’tiroz va hujjatlar.
+Dalillar sud majlisida alohida tekshiriladi; ularning qaysi biri hal qiluvchi ekanini talaba mustaqil aniqlaydi.`
+: type==="economic"
+? `DALILLAR PAPKASI:
+1. Shartnoma va qo‘shimcha kelishuvlar.
+2. Hisob-faktura, akt va to‘lov hujjatlari.
+3. Korporativ yoki texnik hujjatlar.
+4. Email/messenjer yozishmalari.
+5. Ekspert yoki mutaxassis xulosasi mavjud bo‘lsa, uning chegaralari.
+6. Qarshi tomonning birlamchi hujjatlari.
+Sud har bir hujjatning kelib chiqishi, vakolat va boshqa dalillar bilan mosligini tekshiradi.`
+: `DALILLAR PAPKASI:
+1. Nizolashilayotgan ma’muriy hujjat yoki harakat bayonnomasi.
+2. Arizachi taqdim etgan hujjatlar.
+3. Ma’muriy organning ish yuritish materiallari.
+4. Elektron tizim jurnali, video yoki texnik ma’lumotlar.
+5. Xabardor qilish va tinglashga oid materiallar.
+6. Taraflarning yozma e’tirozlari.
+Talaba ma’muriy organning vakolati, protsedura va faktik asoslarni mustaqil tekshiradi.`,
+
+roleBriefs:{
+
+"Sudya":
+`Siz sudyasiz.
+
+Siz sud majlisini boshqarasiz.
+
+Protsessual ketma-ketlikni saqlang,
+taraflarga teng imkoniyat bering,
+dalillarni tekshiring va
+taraflarning talab hamda
+e’tirozlarini aniqlashtiring.`,
+
+"Da’vogar":
+`Siz da’vogarsiz.
+
+Talabingizning faktik asosini
+tushuntiring.
+
+Suddan nimani so‘rayotganingizni
+aniq ayting va o‘z dalillaringizga
+tayaning.`,
+
+"Javobgar":
+`Siz javobgarsiz.
+
+Da’voga munosabatingizni
+bildiring.
+
+Qaysi fakt yoki dalilga
+e’tirozingiz borligini
+aniq tushuntiring.`,
+
+"Da’vogar vakili":
+`Siz da’vogar vakilisiz.
+
+Da’vo talabini huquqiy va
+faktik jihatdan asoslang,
+dalillarni ko‘rsating va
+qarshi taraf e’tirozlariga
+javob bering.`,
+
+"Javobgar vakili":
+`Siz javobgar vakilisiz.
+
+Da’voga qarshi huquqiy
+pozitsiyani shakllantiring,
+dalillarni tekshiring va
+e’tirozlaringizni asoslang.`,
+
+"Korxona rahbari":
+`Siz korxona rahbarisiz.
+
+Sudning korxona faoliyati,
+shartnoma va majburiyatlarga
+oid faktik savollariga
+aniq javob bering.`,
+
+"Arizachi":
+`Siz arizachisiz.
+
+Qaysi ma’muriy qaror,
+harakat yoki harakatsizlik
+huquqingizni buzganini
+aniq tushuntiring.`,
+
+"Arizachi vakili":
+`Siz arizachi vakilisiz.
+
+Ma’muriy organ qarorining
+qonuniyligi va asoslanganligini
+tahlil qilib, arizachi
+pozitsiyasini himoya qiling.`,
+
+"Ma’muriy organ vakili":
+`Siz ma’muriy organ vakilisiz.
+
+Nizolashilayotgan qaror yoki
+harakatning huquqiy va faktik
+asoslarini sudga tushuntiring.`
+
+},
+
+witnessKnowledge:
+`Guvoh faqat ish bo‘yicha
+bevosita bilgan holatlari
+haqida javob beradi.`,
+
+lawTopics:
+type==="civil"
+?
+[
+"Fuqarolik protsessual kodeksi",
+"Fuqarolik kodeksi",
+"kazusga tegishli maxsus qonunchilik"
+]
+:
+type==="economic"
+?
+[
+"Iqtisodiy protsessual kodeksi",
+"Fuqarolik kodeksi",
+"shartnoma va majburiyatlarga oid normalar"
+]
+:
+[
+"Ma’muriy sud ishlarini yuritish to‘g‘risidagi kodeks",
+"ma’muriy hujjatning qonuniyligi",
+"ma’muriy organ vakolati va protsedurasi"
+]
+
+};
+
+});
+
+}
+
+
+/* =====================================================
+   DATA
+===================================================== */
+
+const data={
+
+criminal:{
+name:"Jinoyat protsessi",
+cases:createCriminalCases()
+},
+
+civil:{
+name:"Fuqarolik protsessi",
+cases:createOtherCases(
+"civil",
+civilTitles
+)
+},
+
+economic:{
+name:"Iqtisodiy protsess",
+cases:createOtherCases(
+"economic",
+economicTitles
+)
+},
+
+administrative:{
+name:"Ma’muriy protsess",
+cases:createOtherCases(
+"administrative",
+administrativeTitles
+)
+}
+
+};
+
+
+/* =====================================================
+   SIMULYATSIYA HOLATI
+===================================================== */
+
+let currentDirection=null;
+
+let currentCaseIndex=null;
+
+let currentRole=null;
+
+let currentCase=null;
+
+let seconds=300;
+
+let timerInterval=null;
+
+let flow=[];
+
+let flowIndex=0;
+
+let waitingForStudent=false;
+
+let studentAnswers=[];
+
+let judgeHistory=[];
+
+
+/* =====================================================
+   YO‘NALISH TANLASH
+===================================================== */
+
+document
+.querySelectorAll("[data-direction]")
+.forEach(item=>{
+
+item.addEventListener(
+"click",
+()=>openDirection(
+item.dataset.direction
+)
+);
+
 });
 
 
-/* EXPRESS 5 FIX: app.get("*") YO‘Q */
-app.use((req,res,next)=>{
- if(req.path.startsWith("/api/"))return res.status(404).json({ok:false,error:"API route not found"});
- if(req.method!=="GET")return next();
- res.sendFile(path.join(__dirname,"public","index.html"));
+function openDirection(direction){
+
+currentDirection=direction;
+
+currentRole=null;
+
+$("directionName").textContent=
+data[direction].name;
+
+$("casesList").innerHTML="";
+
+data[direction]
+.cases
+.forEach((caseItem,index)=>{
+
+const box=
+document.createElement("div");
+
+box.className="item";
+
+box.innerHTML=
+`
+<h3>
+Kazus ${index+1} — ${caseItem.title}
+</h3>
+
+<p>
+Ish materiallarini ochish
+</p>
+`;
+
+box.onclick=
+()=>openCase(index);
+
+$("casesList")
+.appendChild(box);
+
 });
 
-app.use((err,req,res,next)=>{
- console.error("SERVER_ERROR:",err);
- if(res.headersSent)return next(err);
- res.status(500).json({ok:false,error:"Internal server error"});
+showScreen("casesScreen");
+
+}
+
+
+/* =====================================================
+   KAZUSNI OCHISH
+===================================================== */
+
+function openCase(index){
+
+currentCaseIndex=index;
+
+currentCase=
+data[currentDirection]
+.cases[index];
+
+currentRole=null;
+
+$("caseName").textContent=
+`Kazus ${index+1} — ${currentCase.title}`;
+
+$("caseText").textContent=
+currentCase.facts;
+
+renderParticipants();
+
+renderRoles();
+
+$("roleBrief")
+.classList.add("hidden");
+
+startTimer();
+
+showScreen("prepare");
+
+}
+
+
+/* =====================================================
+   ISHTIROKCHILAR
+===================================================== */
+
+function participantProfile(key, person){
+
+const profiles={
+judge:{profession:"Professional sudya",courtRole:"Raislik qiluvchi sudya"},
+clerk:{profession:"Sud apparati xodimi",courtRole:"Sud majlisi kotibi"},
+prosecutor:{profession:"Prokuror",courtRole:"Davlat ayblovchisi"},
+defense:{profession:"Advokat",courtRole:"Sudlanuvchi himoyachisi"},
+defendant:{profession:"Xususiy sektor xodimi",courtRole:"Sudlanuvchi"},
+victim:{profession:"Tadbirkor / fuqaro",courtRole:"Jabrlanuvchi"},
+victimLawyer:{profession:"Advokat",courtRole:"Jabrlanuvchi vakili"},
+witness:{profession:"Fuqaro",courtRole:"Guvoh"},
+expert:{profession:"Sud eksperti",courtRole:"Ekspert"},
+claimant:{profession:"Fuqaro / tadbirkor",courtRole:"Da’vogar"},
+respondent:{profession:"Fuqaro / tadbirkor",courtRole:"Javobgar"},
+claimantLawyer:{profession:"Advokat",courtRole:"Da’vogar vakili"},
+respondentLawyer:{profession:"Advokat",courtRole:"Javobgar vakili"},
+applicant:{profession:"Fuqaro / tadbirkor",courtRole:"Arizachi"},
+applicantLawyer:{profession:"Advokat",courtRole:"Arizachi vakili"},
+authority:{profession:"Davlat organi xodimi",courtRole:"Ma’muriy organ vakili"},
+director:{profession:"Korxona rahbari",courtRole:"Korxona vakili"}
+};
+
+return profiles[key] || {
+profession:"Sud ishtirokchisi",
+courtRole:"Protsess ishtirokchisi"
+};
+
+}
+
+
+function renderParticipants(){
+
+$("participants").innerHTML="";
+
+const seen=new Set();
+
+Object.entries(currentCase.people)
+.filter(([key,person])=>Boolean(person))
+.forEach(([key,person])=>{
+
+if(seen.has(person)) return;
+seen.add(person);
+
+const profile=participantProfile(key,person);
+
+const card=document.createElement("div");
+card.className="participantIdentityCard";
+
+const avatar=document.createElement("div");
+avatar.className="participantIdentityAvatar";
+avatar.textContent=person.split(" ").map(x=>x[0]).slice(0,2).join("");
+
+const info=document.createElement("div");
+info.className="participantIdentityInfo";
+
+const name=document.createElement("strong");
+name.textContent=person;
+
+const profession=document.createElement("span");
+profession.textContent="Kasbi: "+profile.profession;
+
+const role=document.createElement("em");
+role.textContent="Suddagi maqomi: "+profile.courtRole;
+
+const ageLine=document.createElement("em");
+let birthDate=null;
+if(currentCase.ageData){
+ if(key==="defendant") birthDate=currentCase.ageData.defendantBirthDate;
+ if(key==="victim") birthDate=currentCase.ageData.victimBirthDate;
+ if(key==="claimant" || key==="applicant") birthDate=currentCase.ageData.claimantBirthDate;
+ if(key==="respondent" || key==="director") birthDate=currentCase.ageData.respondentBirthDate;
+}
+if(birthDate && currentCase.ageData.eventDate){
+ const ageAtEvent=calculateAgeOnDate(birthDate,currentCase.ageData.eventDate);
+ ageLine.textContent=ageAtEvent ? `Hodisa paytidagi yosh: ${ageAtEvent.label}` : "";
+}
+
+info.appendChild(name);
+info.appendChild(profession);
+info.appendChild(role);
+if(ageLine.textContent) info.appendChild(ageLine);
+card.appendChild(avatar);
+card.appendChild(info);
+
+$("participants").appendChild(card);
+
 });
 
-app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V9");
- console.log("PORT:",PORT);
- console.log("MODEL:",GEMINI_MODEL);
- console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
- console.log("EXPRESS 5 WILDCARD FIX: OK");
+}
+
+
+/* =====================================================
+   ROLLAR
+===================================================== */
+
+function roleDuty(role){
+const duties={
+"Sudya":"Sud majlisini boshqaring, protsessual tartib va taraflar tengligini ta’minlang.",
+"Prokuror":"Davlat ayblovini asoslang, dalillarni taqdim eting va savollar bering.",
+"Himoyachi":"Himoya pozitsiyasini tuzing, e’tiroz bildiring va mijoz manfaatlarini himoya qiling.",
+"Sudlanuvchi":"O‘z pozitsiyangizni bayon qiling va sizga berilgan savollarga shaxsan javob bering.",
+"Jabrlanuvchi":"Voqea va yetkazilgan zarar bo‘yicha o‘z ko‘rsatuvingizni bayon qiling.",
+"Da’vogar":"Talablaringizni faktlar va dalillar bilan asoslang.",
+"Javobgar":"Da’voga munosabatingizni bildirib, o‘z e’tirozlaringizni asoslang.",
+"Da’vogar vakili":"Da’vogarning huquqiy pozitsiyasini professional tarzda himoya qiling.",
+"Javobgar vakili":"Javobgar manfaatlarini himoya qilib, da’vo vajlariga huquqiy javob bering.",
+"Korxona rahbari":"Korxona nomidan ish holati va xo‘jalik pozitsiyasini bayon qiling.",
+"Arizachi":"Ma’muriy talab va uning asoslarini sudga aniq bayon qiling.",
+"Arizachi vakili":"Arizachining huquqiy manfaatlarini protsessual tartibda himoya qiling.",
+"Ma’muriy organ vakili":"Davlat organining qarori yoki harakatining asoslarini sudga tushuntiring."
+};
+return duties[role]||"Tanlangan maqom doirasida sud majlisida faol va protsessual tartibda ishtirok eting.";
+}
+
+function renderRoles(){
+$("roles").innerHTML="";
+currentCase.roles.forEach(role=>{
+const box=document.createElement("div");
+box.className="role";
+const person=personForRole(role);
+box.innerHTML=`<span class="roleKicker">PROTSESSUAL MAQOM</span><span class="roleName">${role}</span><span class="rolePerson">${person && person!==role ? person : "Sud ishtirokchisi"}</span><span class="roleDuty">${roleDuty(role)}</span>`;
+box.onclick=()=>{
+document.querySelectorAll(".role").forEach(item=>item.classList.remove("selected"));
+box.classList.add("selected");
+currentRole=role;
+showRoleBrief();
+};
+$("roles").appendChild(box);
 });
+}
+
+function showRoleBrief(){
+
+const brief=
+currentCase.roleBriefs[currentRole]
+||
+"Tanlagan rolingiz bo‘yicha sud majlisida ishtirok eting.";
+
+$("roleBrief").textContent=brief;
+
+$("roleBrief")
+.classList.remove("hidden");
+
+}
+
+
+/* =====================================================
+   TIMER
+===================================================== */
+
+function startTimer(){
+
+clearInterval(timerInterval);
+
+seconds=300;
+
+drawTimer();
+
+timerInterval=
+setInterval(()=>{
+
+if(seconds>0){
+
+seconds--;
+
+drawTimer();
+
+}else{
+
+clearInterval(timerInterval);
+
+}
+
+},1000);
+
+}
+
+
+function drawTimer(){
+
+const min=
+Math.floor(seconds/60);
+
+const sec=
+seconds%60;
+
+$("timer").textContent=
+String(min).padStart(2,"0")
++
+":"
++
+String(sec).padStart(2,"0");
+
+}
+
+
+/* =====================================================
+   XABAR
+===================================================== */
+
+function addMessage(
+type,
+speaker,
+text
+){
+
+const div=
+document.createElement("div");
+
+div.className=
+"message "+type;
+
+const title=
+document.createElement("b");
+
+title.textContent=speaker;
+
+const body=
+document.createElement("div");
+
+body.textContent=text;
+
+div.appendChild(title);
+
+div.appendChild(body);
+
+$("chat")
+.appendChild(div);
+
+$("chat").scrollTop=
+$("chat").scrollHeight;
+
+}
+
+
+/* =====================================================
+   ROL NOMI
+===================================================== */
+
+function personForRole(role){
+
+const p=currentCase.people;
+
+const map={
+
+"Sudya":p.judge,
+
+"Prokuror":p.prosecutor,
+
+"Himoyachi":p.defense,
+
+"Sudlanuvchi":p.defendant,
+
+"Jabrlanuvchi":p.victim,
+
+"Da’vogar":p.claimant,
+
+"Javobgar":p.respondent,
+
+"Da’vogar vakili":p.claimantLawyer,
+
+"Javobgar vakili":p.respondentLawyer,
+
+"Korxona rahbari":p.director,
+
+"Arizachi":p.applicant,
+
+"Arizachi vakili":p.applicantLawyer,
+
+"Ma’muriy organ vakili":p.authority
+
+};
+
+return map[role] || role;
+
+}
+
+
+/* =====================================================
+   SUDNI BOSHLASH
+===================================================== */
+
+$("startCourt").onclick=
+startCourt;
+
+
+function startCourt(){
+
+if(!currentRole){
+
+alert(
+"Avval protsessual rolingizni tanlang."
+);
+
+return;
+
+}
+
+clearInterval(timerInterval);
+
+studentAnswers=[];
+
+judgeHistory=[];
+
+flowIndex=0;
+
+waitingForStudent=false;
+
+$("chat").innerHTML="";
+
+$("answer").value="";
+
+$("answer").disabled=true;
+
+$("send").disabled=true;
+
+$("judgeControls")
+.classList.add("hidden");
+
+$("studentInput")
+.classList.remove("hidden");
+
+$("courtInfo").innerHTML=
+`
+<b>${data[currentDirection].name}</b>
+<br>
+Kazus:
+${currentCase.title}
+<br>
+Sizning rolingiz:
+<b>
+${currentRole}
+—
+${personForRole(currentRole)}
+</b>
+`;
+
+showScreen("court");
+
+
+/*
+  SUDYA ALOHIDA REJIM
+*/
+
+if(currentRole==="Sudya"){
+
+startJudgeMode();
+
+return;
+
+}
+
+
+/*
+  BOSHQA ROLLAR
+*/
+
+flow=
+buildRoleBasedFlow();
+
+runFlow();
+
+}
+
+
+/* =====================================================
+   ROLGA MOS PROTSESSUAL FLOW
+===================================================== */
+
+function buildRoleBasedFlow(){
+
+if(currentDirection==="criminal"){
+
+return buildCriminalFlow();
+
+}
+
+return buildCivilStyleFlow();
+
+}
+
+
+/* =====================================================
+   JINOYAT PROTSESSI
+===================================================== */
+
+function buildCriminalFlow(){
+
+const p=currentCase.people;
+
+return [
+
+{
+stage:"Sud majlisining ochilishi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud majlisi ochiq deb e’lon qilinadi.
+${currentCase.title} bo‘yicha ishni
+ko‘rib chiqishga kirishamiz.`
+},
+
+{
+stage:"Davomatni tekshirish",
+speaker:"Sud majlisi kotibi",
+name:p.clerk,
+type:"clerk",
+text:
+`Hurmatli sud,
+sud majlisiga chaqirilgan
+ishtirokchilarning kelgani
+haqida ma’lum qilaman.`
+},
+
+{
+stage:"Sudlanuvchining shaxsini aniqlash",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sudlanuvchi ${p.defendant},
+o‘rningizdan turing.
+Sudga o‘zingiz haqingizdagi
+so‘ralgan ma’lumotlarni bildiring.`,
+targetRole:"Sudlanuvchi",
+prompt:
+"Sudga o‘zingizni tanishtiring."
+},
+
+{
+stage:"Sud tarkibini e’lon qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud tarkibi,
+davlat ayblovchisi,
+himoyachi,
+kotib va boshqa
+ishtirokchilar e’lon qilinadi.`
+},
+
+{
+stage:"Rad qilish huquqini tushuntirish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflarga sud tarkibi
+va protsess ishtirokchilarini
+rad qilish bilan bog‘liq
+protsessual huquqlari
+tushuntiriladi.`
+},
+
+{
+stage:"Huquq va majburiyatlarni tushuntirish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud majlisi ishtirokchilariga
+ularning protsessual huquq
+va majburiyatlari tushuntiriladi.`
+},
+
+{
+stage:"Iltimosnoma va e’tirozlar",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflarda sud muhokamasini
+davom ettirishdan oldin
+iltimosnoma yoki e’tirozlar bormi?`,
+targetRole:"ACTIVE",
+prompt:
+`Rolangizdan kelib chiqib
+iltimosnoma yoki e’tirozingizni
+bildiring.
+
+Agar yo‘q bo‘lsa,
+buni aniq ayting.`
+},
+
+{
+stage:"Sud tergovining boshlanishi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud sud tergovini boshlaydi.
+Davlat ayblovchisiga
+ayblovni bayon qilish uchun
+so‘z beriladi.`
+},
+
+{
+stage:"Ayblovni bayon qilish",
+speaker:"Davlat ayblovchisi",
+name:p.prosecutor,
+type:"prosecutor",
+text:
+`Davlat ayblovchisi ishning
+faktik holatlari,
+ayblov mazmuni va
+ayblov tomoni tayanayotgan
+dalillarni bayon qiladi.`,
+targetRole:"Prokuror",
+prompt:
+`Davlat ayblovchisi sifatida
+ayblov pozitsiyangizni bayon qiling.
+
+Faktlar, dalillar va
+huquqiy pozitsiyani ko‘rsating.`
+},
+
+{
+stage:"Ayblovga munosabat",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sudlanuvchi ${p.defendant},
+bayon qilingan ayblov
+sizga tushunarlimi?
+
+Ayblovga munosabatingizni
+bildiring.`,
+targetRole:"Sudlanuvchi",
+prompt:
+`Ayblovga shaxsiy
+munosabatingizni bildiring.`
+},
+
+{
+stage:"Jabrlanuvchini tinglash",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Jabrlanuvchi ${p.victim},
+hodisa bo‘yicha o‘zingiz
+bilgan holatlarni sudga
+bayon qiling.`,
+targetRole:"Jabrlanuvchi",
+prompt:
+`Hodisa,
+sizga yetgan zarar
+va talablaringizni
+bayon qiling.`
+},
+
+{
+stage:"Jabrlanuvchi vakilining pozitsiyasi",
+speaker:"Jabrlanuvchi vakili",
+name:p.victimLawyer,
+type:"victim",
+text:
+`Jabrlanuvchi tomonining
+huquq va qonuniy manfaatlari
+himoya qilinishi,
+ishdagi dalillar esa
+to‘liq tekshirilishini so‘rayman.`
+},
+
+{
+stage:"Himoya pozitsiyasi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Himoyachi ${p.defense},
+himoya tomonining
+pozitsiyasini bayon qiling.`,
+targetRole:"Himoyachi",
+prompt:
+`Himoya pozitsiyangizni
+fakt va dalillar bilan
+asoslang.`
+},
+
+{
+stage:"Sudlanuvchini so‘roq qilish",
+speaker:"Davlat ayblovchisi",
+name:p.prosecutor,
+type:"prosecutor",
+text:
+`Sudlanuvchiga savol:
+hodisa yuz bergan vaqtda
+qayerda bo‘lgansiz?`,
+targetRole:"Sudlanuvchi",
+prompt:
+`Savolga shaxsan javob bering.
+
+Himoyachingiz bu savolga
+sizning o‘rningizga javob bermaydi.`
+},
+
+{
+stage:"Sudlanuvchini so‘roq qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Davlat ayblovchisi,
+sudlanuvchiga qo‘shimcha
+savolingiz bormi?`,
+targetRole:"Prokuror",
+prompt:
+`Sudlanuvchiga ishga aloqador
+aniq savol bering.
+
+Agar savolingiz bo‘lmasa,
+shuni bildiring.`
+},
+
+{
+stage:"Sudlanuvchini so‘roq qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Himoyachi,
+himoya qilayotgan shaxsingizga
+savollaringiz bormi?`,
+targetRole:"Himoyachi",
+prompt:
+`Sudlanuvchiga himoya
+pozitsiyasini aniqlashtiradigan
+savol bering.`
+},
+
+{
+stage:"Guvohni chaqirish",
+speaker:"Sud majlisi kotibi",
+name:p.clerk,
+type:"clerk",
+text:
+`Guvoh ${p.witness}
+sud majlisi zaliga taklif qilindi.`
+},
+
+{
+stage:"Guvoh ko‘rsatmasi",
+speaker:"Guvoh",
+name:p.witness,
+type:"witness",
+text:
+getWitnessOpening()
+},
+
+{
+stage:"Guvohni so‘roq qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Davlat ayblovchisi,
+guvohga savollaringiz bormi?`,
+targetRole:"Prokuror",
+prompt:
+`Guvohga bitta aniq
+va ishga aloqador
+savol bering.`,
+responseType:"WITNESS"
+},
+
+{
+stage:"Guvohni so‘roq qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Himoyachi,
+guvohga savollaringiz bormi?`,
+targetRole:"Himoyachi",
+prompt:
+`Guvoh ko‘rsatmasining
+ishonchliligini yoki
+aniqligini tekshiradigan
+savol bering.`,
+responseType:"WITNESS"
+},
+
+{
+stage:"Guvohni so‘roq qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Jabrlanuvchi,
+guvohga savolingiz bo‘lsa
+berishingiz mumkin.`,
+targetRole:"Jabrlanuvchi",
+prompt:
+`Guvohga savol bering
+yoki savolingiz yo‘qligini ayting.`,
+responseType:"WITNESS"
+},
+
+{
+stage:"Dalillarni tekshirish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud ish materiallaridagi
+yozma, ashyoviy,
+elektron va boshqa
+dalillarni tekshirishga o‘tadi.`
+},
+
+{
+stage:"Dalillarga munosabat",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflar,
+tekshirilgan dalillarga
+munosabatingizni bildiring.`,
+targetRole:"ACTIVE",
+prompt:
+`Rolangizdan kelib chiqib
+dalillarga munosabatingizni
+bildiring.
+
+Agar dalilga e’tirozingiz bo‘lsa,
+uning sababini tushuntiring.`
+},
+
+{
+stage:"Ekspert xulosasini tekshirish",
+speaker:"Ekspert",
+name:p.expert,
+type:"witness",
+text:
+`Men ekspert xulosasida
+ko‘rsatilgan tekshiruv
+natijalarini tasdiqlayman.
+
+Xulosa taqdim etilgan
+materiallar asosida
+tayyorlangan.`
+},
+
+{
+stage:"Ekspertga savollar",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflarda ekspertga
+savollar bormi?`,
+targetRole:"ACTIVE",
+prompt:
+`Agar rolingizga mos bo‘lsa,
+ekspertga savol bering.
+
+Savol bo‘lmasa,
+shuni bildiring.`
+},
+
+{
+stage:"Sud tergovini yakunlash",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud ish bo‘yicha
+dalillarni tekshirishni
+yakunlaydi.
+
+Sud muzokarasiga o‘tiladi.`
+},
+
+{
+stage:"Sud muzokarasi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Davlat ayblovchisiga
+sud muzokarasida
+so‘z beriladi.`,
+targetRole:"Prokuror",
+prompt:
+`Yakuniy ayblov nutqingizni
+bayon qiling:
+
+1. pozitsiya;
+2. faktlar;
+3. dalillar;
+4. huquqiy asos;
+5. suddan so‘rov.`
+},
+
+{
+stage:"Sud muzokarasi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Jabrlanuvchi tomoniga
+so‘z beriladi.`,
+targetRole:"Jabrlanuvchi",
+prompt:
+`Yakuniy pozitsiyangiz
+va suddan so‘rovingizni
+bildiring.`
+},
+
+{
+stage:"Sud muzokarasi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Himoyachiga sud
+muzokarasida so‘z beriladi.`,
+targetRole:"Himoyachi",
+prompt:
+`Yakuniy himoya nutqingizni
+bayon qiling:
+
+pozitsiya → dalil →
+huquqiy asos →
+suddan so‘rov.`
+},
+
+{
+stage:"Sudlanuvchining oxirgi so‘zi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sudlanuvchi ${p.defendant},
+sizga oxirgi so‘z beriladi.`,
+targetRole:"Sudlanuvchi",
+prompt:
+`Oxirgi so‘zingizni
+o‘z nomingizdan ayting.`
+},
+
+{
+stage:"Sudning maslahatxonaga chiqishi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud sud hujjatini
+qabul qilish uchun
+maslahatxonaga chiqadi.
+
+O‘quv sud majlisining
+protsessual qismi yakunlandi.`
+}
+
+];
+
+}
+
+
+/* =====================================================
+   FUQAROLIK / IQTISODIY / MA'MURIY FLOW
+===================================================== */
+
+function buildCivilStyleFlow(){
+
+const p=currentCase.people;
+
+let claimantRole;
+let respondentRole;
+let claimantName;
+let respondentName;
+
+if(currentDirection==="civil"){
+
+claimantRole="Da’vogar";
+respondentRole="Javobgar";
+
+claimantName=p.claimant;
+respondentName=p.respondent;
+
+}
+
+if(currentDirection==="economic"){
+
+claimantRole="Da’vogar vakili";
+respondentRole="Javobgar vakili";
+
+claimantName=p.claimantLawyer;
+respondentName=p.respondentLawyer;
+
+}
+
+if(currentDirection==="administrative"){
+
+claimantRole="Arizachi";
+respondentRole="Ma’muriy organ vakili";
+
+claimantName=p.applicant;
+respondentName=p.authority;
+
+}
+
+
+return [
+
+{
+stage:"Sud majlisining ochilishi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud majlisi ochiq deb
+e’lon qilinadi.
+
+${currentCase.title}
+bo‘yicha ish ko‘rib chiqiladi.`
+},
+
+{
+stage:"Davomatni tekshirish",
+speaker:"Sud majlisi kotibi",
+name:p.clerk,
+type:"clerk",
+text:
+`Sud majlisiga chaqirilgan
+ishtirokchilarning kelgani
+haqida sudga ma’lum qilaman.`
+},
+
+{
+stage:"Ishtirokchilarni aniqlash",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud taraflarning shaxsi
+va vakillarning vakolatlarini
+aniqlaydi.`
+},
+
+{
+stage:"Sud tarkibini e’lon qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud tarkibi va
+sud majlisi ishtirokchilari
+e’lon qilinadi.`
+},
+
+{
+stage:"Huquqlarni tushuntirish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflarga ularning
+protsessual huquq va
+majburiyatlari tushuntiriladi.`
+},
+
+{
+stage:"Iltimosnomalar",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflarda iltimosnoma
+yoki protsessual
+e’tirozlar bormi?`,
+targetRole:"ACTIVE",
+prompt:
+`Rolangizdan kelib chiqib
+iltimosnoma yoki
+e’tirozingizni bildiring.`
+},
+
+{
+stage:"Talabni bayon qilish",
+speaker:claimantRole,
+name:claimantName,
+type:"party",
+text:
+`Talab tarafining
+pozitsiyasi sudga
+bayon qilinadi.`,
+targetRole:claimantRole,
+prompt:
+`Talabingizni aniq bayon qiling:
+
+— nima sodir bo‘lgan;
+— qaysi huquq buzilgan;
+— qaysi dalillarga tayanasiz;
+— suddan nimani so‘raysiz.`
+},
+
+{
+stage:"Talabga munosabat",
+speaker:respondentRole,
+name:respondentName,
+type:"party",
+text:
+`Qarshi taraf talabga
+munosabatini bildiradi.`,
+targetRole:respondentRole,
+prompt:
+`Talabga munosabatingizni
+va e’tirozlaringizni
+asoslab bering.`
+},
+
+{
+stage:"Ish holatlarini aniqlash",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud taraflar o‘rtasidagi
+bahsli va bahssiz
+holatlarni aniqlashtiradi.`
+},
+
+{
+stage:"Tarafga savol",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sizning pozitsiyangiz
+uchun eng muhim fakt
+qaysi?`,
+targetRole:"ACTIVE",
+prompt:
+`Ish uchun eng muhim
+faktni va uning ahamiyatini
+tushuntiring.`
+},
+
+{
+stage:"Dalillarni tekshirish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud yozma hujjatlar,
+taraflarning tushuntirishlari
+va boshqa dalillarni
+tekshirishga o‘tadi.`
+},
+
+{
+stage:"Dalillarga munosabat",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Taraflar tekshirilayotgan
+dalillarga munosabat
+bildirishi mumkin.`,
+targetRole:"ACTIVE",
+prompt:
+`Qaysi dalil sizning
+pozitsiyangizni tasdiqlaydi?
+
+Nima sababdan?`
+},
+
+{
+stage:"Guvohni tinglash",
+speaker:"Guvoh",
+name:p.witness,
+type:"witness",
+text:
+`Men faqat o‘zimga
+bevosita ma’lum bo‘lgan
+holatlar bo‘yicha
+savollarga javob beraman.`
+},
+
+{
+stage:"Guvohga savollar",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Tanlagan rolingiz doirasida
+guvohga savolingiz
+bo‘lsa berishingiz mumkin.`,
+targetRole:"ACTIVE",
+prompt:
+`Guvohga aniq va
+ishga aloqador savol bering.`,
+responseType:"WITNESS"
+},
+
+{
+stage:"Sud muzokarasi",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Ish bo‘yicha dalillar
+tekshirildi.
+
+Taraflarga yakuniy
+pozitsiyalarini bayon qilish
+uchun so‘z beriladi.`,
+targetRole:"ACTIVE",
+prompt:
+`Yakuniy sud nutqingizni
+bayon qiling:
+
+pozitsiya → fakt →
+dalil → huquqiy asos →
+suddan so‘rov.`
+},
+
+{
+stage:"Sud hujjatini qabul qilish",
+speaker:"Sud raisi",
+name:p.judge,
+type:"judge",
+text:
+`Sud sud hujjatini
+qabul qilish uchun
+maslahatxonaga chiqadi.
+
+O‘quv sud majlisi yakunlandi.`
+}
+
+];
+
+}
+
+
+/* =====================================================
+   FLOWNI ISHLATISH
+===================================================== */
+
+function runFlow(){
+
+if(flowIndex>=flow.length){
+
+finishProcedure();
+
+return;
+
+}
+
+const item=
+flow[flowIndex];
+
+$("stageTitle").textContent=
+"Joriy bosqich: "
++
+item.stage;
+
+
+/*
+  TALABA NAVBATI
+*/
+
+if(
+item.targetRole===currentRole
+||
+item.targetRole==="ACTIVE"
+){
+
+addMessage(
+item.type || "judge",
+item.speaker+" — "+item.name,
+item.text
+);
+
+askCurrentStudent(item);
+
+return;
+
+}
+
+
+/*
+  TALABA ROLI EMAS
+  -> AI ISHTIROKCHI JAVOB BERADI
+*/
+
+if(item.targetRole){
+
+addMessage(
+item.type || "judge",
+item.speaker+" — "+item.name,
+item.text
+);
+
+setTimeout(()=>{
+
+simulateRoleResponse(
+item.targetRole,
+item
+);
+
+flowIndex++;
+
+setTimeout(
+runFlow,
+500
+);
+
+},500);
+
+return;
+
+}
+
+
+/*
+  ODDIY AI XABARI
+*/
+
+addMessage(
+item.type || "system",
+item.speaker+" — "+item.name,
+item.text
+);
+
+$("turnInfo").textContent=
+"Sud jarayoni davom etmoqda...";
+
+flowIndex++;
+
+setTimeout(
+runFlow,
+550
+);
+
+}
+
+
+/* =====================================================
+   TALABADAN JAVOB
+===================================================== */
+
+function askCurrentStudent(item){
+
+waitingForStudent=true;
+
+$("turnInfo").textContent=
+"🔔 SIZNING NAVBATINGIZ — "
++
+currentRole;
+
+$("answer").disabled=false;
+
+$("send").disabled=false;
+
+$("answer").placeholder=
+item.prompt
+||
+"Javobingizni yozing...";
+
+$("answer").focus();
+
+}
+
+
+/* =====================================================
+   AI ROLLAR JAVOBI
+===================================================== */
+
+function simulateRoleResponse(
+role,
+item
+){
+
+const p=currentCase.people;
+
+let text="";
+
+
+if(role==="Sudlanuvchi"){
+
+if(
+item.stage.includes("shaxs")
+){
+
+text=
+`Men, ${p.defendant}.
+Sud tomonidan so‘ralgan
+shaxsiy ma’lumotlarni
+taqdim etaman.`;
+
+}
+
+else if(
+item.stage.includes("Ayblovga")
+){
+
+text=
+`Ayblov mazmunini tushundim.
+Ayblovga to‘liq qo‘shilmayman.
+Ish holatlari bo‘yicha
+o‘z pozitsiyamni bildiraman.`;
+
+}
+
+else if(
+item.stage.includes("so‘roq")
+){
+
+text=
+`Hodisa yuz bergan vaqtda
+men voqea joyida bo‘lmaganman.
+Bu holatni ishdagi boshqa
+ma’lumotlar bilan tekshirishni
+so‘rayman.`;
+
+}
+
+else{
+
+text=
+`Suddan ishning barcha
+holatlari va himoya
+tomonining vajlarini
+hisobga olishingizni
+so‘rayman.`;
+
+}
+
+}
+
+
+else if(role==="Prokuror"){
+
+text=
+`Davlat ayblovchisi sifatida
+ishdagi dalillarni
+bevosita tekshirishni,
+ularning aloqadorligi,
+maqbulligi va ishonchliligiga
+huquqiy baho berishni
+so‘rayman.`;
+
+}
+
+
+else if(role==="Himoyachi"){
+
+text=
+`Himoya tomoni
+ayblovning har bir vajini
+tanqidiy tekshirishni,
+himoya foydasiga bo‘lgan
+holatlarni ham to‘liq
+baholashni so‘raydi.`;
+
+}
+
+
+else if(role==="Jabrlanuvchi"){
+
+text=
+`Hodisa oqibatida
+menga zarar yetgan.
+
+O‘zimga ma’lum bo‘lgan
+holatlarni sudga bayon
+qilaman va ishdagi
+dalillarni tekshirishni
+so‘rayman.`;
+
+}
+
+
+else if(
+role==="Da’vogar"
+||
+role==="Da’vogar vakili"
+||
+role==="Arizachi"
+){
+
+text=
+`Talabimni ishning
+faktik holatlari va
+taqdim etilgan dalillar
+bilan asoslayman.
+
+Suddan buzilgan huquqni
+himoya qilishni so‘rayman.`;
+
+}
+
+
+else if(
+role==="Javobgar"
+||
+role==="Javobgar vakili"
+||
+role==="Ma’muriy organ vakili"
+){
+
+text=
+`Talabga to‘liq
+qo‘shilmayman.
+
+E’tirozlarim ish
+materiallari va tegishli
+huquqiy asoslar bilan
+baholanishini so‘rayman.`;
+
+}
+
+
+else{
+
+text=
+`Mazkur masala bo‘yicha
+o‘z protsessual
+pozitsiyamni bildiraman.`;
+
+}
+
+
+addMessage(
+"party",
+role+" — "+personForRole(role),
+text
+);
+
+}
+
+
+/* =====================================================
+   GUVOHNING JAVOBI
+===================================================== */
+
+function witnessAnswer(question){
+
+const q=
+question.toLowerCase();
+
+
+/*
+  BIRINCHI JINOYAT KAZUSI UCHUN
+  ANIQ GUVOH BILIMI
+*/
+
+if(
+currentDirection==="criminal"
+&&
+currentCaseIndex===0
+){
+
+if(
+q.includes("qayer")
+||
+q.includes("ko‘r")
+||
+q.includes("vaqt")
+){
+
+return `
+Men ${currentCase.people.defendant}ni
+hodisa kuni taxminan soat 19:30 da
+jabrlanuvchi yashaydigan
+ko‘cha yaqinida ko‘rganman.
+
+Lekin uning xonadonga
+kirganini ko‘rmaganman.
+`;
+
+}
+
+if(
+q.includes("o‘g‘ir")
+||
+q.includes("olgan")
+){
+
+return `
+Men o‘g‘rilikning o‘zini
+bevosita ko‘rmaganman.
+
+Kimdir buyumni olayotganini
+ham ko‘rmaganman.
+`;
+
+}
+
+}
+
+
+/*
+  GUVOH YANGI FAKT TO‘QIMAYDI
+*/
+
+return `
+Bu savol bo‘yicha
+menda bevosita va aniq
+ma’lumot yo‘q.
+
+Men faqat o‘zim ko‘rgan
+yoki bevosita bilgan
+holatlar haqida
+ko‘rsatma bera olaman.
+`;
+
+}
+
+
+
+
+/* =====================================================
+   V6 — LOCAL COURT MEMORY + SEMANTIC ROUTER
+   Keyinchalik Huquqiy AI Court Engine shu interfeysga ulanadi.
+===================================================== */
+
+const courtMemory={
+  exchanges:[],
+  bySpeaker:{},
+  issues:{},
+  contradictions:[]
+};
+
+function resetCourtMemory(){
+  courtMemory.exchanges=[];
+  courtMemory.bySpeaker={};
+  courtMemory.issues={};
+  courtMemory.contradictions=[];
+}
+
+function rememberCourtExchange(speaker,question,answer,stage){
+  const row={
+    speaker:speaker,
+    question:question||"",
+    answer:answer||"",
+    stage:stage||"",
+    at:Date.now()
+  };
+  courtMemory.exchanges.push(row);
+  if(!courtMemory.bySpeaker[speaker]) courtMemory.bySpeaker[speaker]=[];
+  courtMemory.bySpeaker[speaker].push(row);
+}
+
+function recentSpeakerMemory(speaker,limit=3){
+  const rows=courtMemory.bySpeaker[speaker]||[];
+  return rows.slice(-limit);
+}
+
+function semanticIntent(text){
+  const q=normalizeCourtText(text);
+  const intents=[];
+  const tests={
+    time:["qachon","soat","vaqt","nechada"],
+    place:["qayer","joy","manzil"],
+    reason:["nega","nima sabab","sabab","maqsad"],
+    identity:["kim","taniysiz","tanish","shaxs"],
+    action:["nima qild","qanday qild","harakat","urd","old","berd","kird","chiqd"],
+    weapon:["pichoq","qurol","butilka","temir","asbob"],
+    phone:["telefon","telegram","sms","yozishma","qo'ng'iroq","qongiroq"],
+    money:["pul","qarz","to'lov","tolov","bank","o'tkaz","otkaz"],
+    video:["video","kamera","yozuv","tasvir"],
+    document:["hujjat","bayonnoma","shartnoma","dalolatnoma","imzo"],
+    contradiction:["nega oldin","avval","tergovda","hozir esa","zid","farq","boshqacha"],
+    certainty:["aniq","ishonch","eslaysiz","ko'rdingiz","kordingiz"],
+    evidence:["dalil","iz","ekspert","xulosa","biologik","barmoq","geolokats"]
+  };
+  for(const [k,words] of Object.entries(tests)){
+    if(words.some(w=>q.includes(w))) intents.push(k);
+  }
+  return intents;
+}
+
+function extractCaseSentences(){
+  const raw=((currentCase&&currentCase.facts)||"")+" "+((currentCase&&currentCase.evidenceDossier)||"");
+  return raw.split(/[\n.!?]+/).map(x=>x.trim()).filter(x=>x.length>18);
+}
+
+function relevantCaseFacts(question,limit=3){
+  const q=normalizeCourtText(question);
+  const intents=semanticIntent(question);
+  const words=q.split(/\s+/).filter(w=>w.length>4);
+  const rows=extractCaseSentences().map(sentence=>{
+    const low=normalizeCourtText(sentence);
+    let score=0;
+    for(const w of words) if(low.includes(w)) score+=2;
+    for(const intent of intents){
+      const map={
+        time:["soat","vaqt","sana"],
+        place:["joy","uy","ko'cha","ombor","maydon","xonadon"],
+        reason:["sabab","qarz","nizo","uchrash"],
+        weapon:["pichoq","qurol","temir","butilka"],
+        phone:["telefon","telegram","yozish","qo'ng'iroq"],
+        money:["pul","qarz","bank","to'lov","sum"],
+        video:["kamera","video","tasvir"],
+        document:["hujjat","bayonnoma","shartnoma","dalolatnoma"],
+        evidence:["dalil","iz","ekspert","xulosa","qon","geolokats"]
+      };
+      if((map[intent]||[]).some(x=>low.includes(x))) score+=1;
+    }
+    return {sentence,score};
+  }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+  return rows.slice(0,limit).map(x=>x.sentence);
+}
+
+function localRoleAnswer(target,question){
+  const intents=semanticIntent(question);
+  const facts=relevantCaseFacts(question,3);
+  const history=recentSpeakerMemory(target,3);
+
+  if(target==="Guvoh"){
+    const base=witnessAnswer(question).trim();
+    if(!base.includes("menda bevosita va aniq") || facts.length===0) return base;
+    return `Bu savol bo‘yicha men faqat bevosita ko‘rgan yoki eshitgan holatimni ayta olaman. Ish materialidagi boshqa ma’lumotni o‘zim ko‘rgandek tasdiqlamayman.`;
+  }
+
+  if(target==="Ekspert"){
+    if(facts.length){
+      return `Ekspertiza doirasida ish materialida quyidagi holat ahamiyatli: ${facts[0]}. Men bundan tashqari fakt bo‘yicha taxminiy xulosa bermayman.`;
+    }
+    return `Bu savol ekspertiza xulosasida tekshirilgan doira bilan cheklangan. Xulosada bo‘lmagan holatni taxmin qilib ayta olmayman.`;
+  }
+
+  if(target==="Sudlanuvchi"){
+    if(intents.includes("contradiction") && history.length){
+      return `Oldingi javobimni o‘zgartirmayman. Siz ko‘rsatgan tafovut bo‘yicha aniqlik kiritaman: mening avvalgi javobim “${history[history.length-1].answer.slice(0,180)}${history[history.length-1].answer.length>180?"…":""}” mazmunida edi. Ish materialida bundan boshqacha qayd bo‘lsa, o‘sha bayonnoma va dalil bilan solishtirib tekshirilishini so‘rayman.`;
+    }
+    if(facts.length){
+      return `Savolingizga kazusdagi ma’lumotlar doirasida javob beraman. ${facts[0]}. ${facts[1] ? "Shuningdek, "+facts[1]+"." : ""} Men ish materialida yo‘q yangi holatni qo‘shmayman.`;
+    }
+    return answerFromCaseFacts(target,question);
+  }
+
+  if(target==="Jabrlanuvchi"){
+    if(facts.length){
+      return `Menga bevosita ma’lum bo‘lgan qism bo‘yicha javob beraman. ${facts[0]}. Qolgan holatlar bo‘yicha taxmin qilmayman.`;
+    }
+    return answerFromCaseFacts(target,question);
+  }
+
+  return answerFromCaseFacts(target,question);
+}
+
+function buildLocalCourtReaction(item,value){
+  const target=detectQuestionTarget(item,value);
+  if(studentEndsQuestions(value)) return {kind:"END"};
+
+  if(target && looksLikeQuestion(value)){
+    const answer=localRoleAnswer(target,value);
+    return {kind:"QUESTION",target,answer};
+  }
+
+  const q=normalizeCourtText(value);
+  if(q.includes("e'tiroz") || q.includes("etiroz")){
+    return {kind:"OBJECTION",answer:
+      `Sud e’tirozni qayd etdi. E’tirozning predmeti va protsessual asosini aniq ko‘rsating. Sud asosni eshitgach, e’tirozni qanoatlantirish yoki rad etish masalasini hal qiladi.`};
+  }
+  if(q.includes("iltimosnoma") || q.includes("so'rayman") || q.includes("sorayman")){
+    return {kind:"MOTION",answer:
+      `Sud iltimosnomani qayd etdi. Qaysi protsessual harakatni so‘rayotganingizni, uning ish uchun ahamiyatini va asosini aniq bayon qiling.`};
+  }
+  return {kind:"STATEMENT"};
+}
+
+/*
+  HUQUQIY AI ULANISH NUQTASI.
+  Keyinchalik shu funksiya backend /api/court-turn ga fetch yuboradi.
+  Hozir local engine ishlaydi.
+*/
+async function getCourtEngineReaction(item,value){
+  const payload={
+    sessionId: window.__courtSessionId || (window.__courtSessionId=(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))),
+    direction: currentDirection,
+    language: currentLanguage,
+    caseIndex: currentCaseIndex,
+    role: currentRole,
+    stage: (item&&item.stage)||"",
+    prompt: (item&&item.prompt)||"",
+    question: value,
+    caseData: {
+      title: currentCase.title,
+      facts: currentCase.facts,
+      evidenceDossier: currentCase.evidenceDossier || "",
+      people: currentCase.people
+    },
+    memory: courtMemory.exchanges.slice(-12)
+  };
+
+  try{
+    const response=await fetch("/api/court-turn",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    });
+    if(!response.ok) throw new Error("AI backend HTTP "+response.status);
+    const data=await response.json();
+    if(!data || !data.kind) throw new Error("AI backend invalid response");
+    return data;
+  }catch(error){
+    console.warn("AI Court Engine ulanmagan, LOCAL fallback ishladi:",error);
+    return buildLocalCourtReaction(item,value);
+  }
+}
+
+/* =====================================================
+   V5 — DINAMIK SUD DIALOGI
+   Talabaning yozgan matni sud jarayonining keyingi
+   reaksiyasini belgilaydi. Savol-javob tugamaguncha
+   flowIndex oshirilmaydi.
+===================================================== */
+
+let adaptiveExchangeCount=0;
+const MAX_ADAPTIVE_EXCHANGES=8;
+
+function normalizeCourtText(text){
+  return (text||"").toLowerCase()
+    .replace(/[ʻ’‘`]/g,"'")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+function studentEndsQuestions(text){
+  const q=normalizeCourtText(text);
+  return [
+    "savolim yo'q","savolim yoq","boshqa savolim yo'q","boshqa savolim yoq",
+    "savol yo'q","savol yoq","savollarim yo'q","savollarim yoq",
+    "savolim mavjud emas","boshqa savol mavjud emas","savol bermayman",
+    "yetarli","rahmat boshqa savolim yo'q","rahmat boshqa savolim yoq"
+  ].some(x=>q.includes(x));
+}
+
+function looksLikeQuestion(text){
+  const q=normalizeCourtText(text);
+  if((text||"").includes("?")) return true;
+  return /^(nega|nima|qachon|qayer|qanday|kim|qancha|qaysi|siz|hodisa|ayting|tushuntiring|aniqlashtiring)/.test(q)
+    || /(edimi|bo'lganmi|bormidingiz|ko'rdingizmi|bilasizmi|taniysizmi|qildingizmi|oldingizmi|berdingizmi|aytdingizmi)/.test(q);
+}
+
+function detectQuestionTarget(item,text){
+  const stage=normalizeCourtText((item&&item.stage)||"");
+  const prompt=normalizeCourtText(((item&&item.prompt)||"")+" "+((item&&item.text)||""));
+  const q=normalizeCourtText(text);
+
+  if((item&&item.responseType==="WITNESS") || stage.includes("guvoh") || prompt.includes("guvoh")) return "Guvoh";
+  if(stage.includes("ekspert") || prompt.includes("ekspert") || q.includes("ekspert")) return "Ekspert";
+  if(stage.includes("jabrlanuvchi") || prompt.includes("jabrlanuvchi")) return "Jabrlanuvchi";
+  if(stage.includes("sudlanuvchi") || prompt.includes("sudlanuvchi") || q.includes("sudlanuvchi")) return "Sudlanuvchi";
+
+  if(currentDirection==="criminal" && ["Prokuror","Himoyachi","Jabrlanuvchi"].includes(currentRole)){
+    if(stage.includes("so'roq") || stage.includes("savol")) return "Sudlanuvchi";
+  }
+  return null;
+}
+
+function dossierText(){
+  return normalizeCourtText((currentCase&&currentCase.facts)||"");
+}
+
+function answerFromCaseFacts(target,question){
+  const q=normalizeCourtText(question);
+  const facts=(currentCase&&currentCase.facts)||"";
+  const low=normalizeCourtText(facts);
+  const p=currentCase.people||{};
+
+  if(target==="Guvoh") return witnessAnswer(question);
+
+  if(target==="Ekspert"){
+    if(q.includes("sabab") || q.includes("jarohat") || q.includes("o'lim") || q.includes("olim"))
+      return `Ekspert sifatida faqat ekspertiza materiallari doirasida javob beraman. Ish materiallarida qayd etilgan jarohat, mexanizm va sababiy bog‘lanish haqidagi xulosalarimni tasdiqlayman. Xulosada aniq belgilanmagan holat bo‘yicha taxmin qilmayman.`;
+    if(q.includes("aniq") || q.includes("ehtimol"))
+      return `Ekspertiza xulosasining chegarasi mavjud. Materiallar qat’iy xulosa berishga imkon bermagan joyda ehtimoliy variantlar ko‘rsatilgan; sud ularni boshqa dalillar bilan birga baholaydi.`;
+    return `Bu savolga ekspertiza vakolatim va xulosam doirasida javob bera olaman. Ish materialida tekshirilmagan fakt bo‘yicha yangi xulosa bera olmayman.`;
+  }
+
+  if(target==="Sudlanuvchi"){
+    if(q.includes("hodisa") && (q.includes("qayer")||q.includes("joy")))
+      return low.includes("voqea joyida bo'lmaganman") ? `Men hodisa vaqtida voqea joyida bo‘lmaganman, degan pozitsiyamda qolaman. Bu holatni ishdagi boshqa ma’lumotlar bilan tekshirishni so‘rayman.` :
+             `Hodisa joyida bo‘lgan-bo‘lmaganim va nima sababdan u yerga kelganim ish materiallaridagi mening versiyamda ko‘rsatilgan. Men o‘sha versiyamni tasdiqlayman va o‘zim bilmagan holatni qo‘shmayman.`;
+    if(q.includes("pichoq"))
+      return low.includes("pichoq") ? `Pichoq bo‘yicha ish materiallarida bergan tushuntirishimni tasdiqlayman. U qanday paydo bo‘lgani va uni qachon ushlaganim haqidagi versiyam o‘zgarmaydi.` :
+             `Pichoq haqida menga ma’lum bo‘lmagan yangi holatni ayta olmayman. Ish materiallarida qayd etilgan faktlar doirasida javob beraman.`;
+    if(q.includes("nega") || q.includes("sabab"))
+      return `Men harakatim sababini ish materiallarida bayon qilgan versiyam asosida tushuntiraman. Ayblov talqiniga qo‘shilmaydigan qismim bo‘lsa, uni aniq ko‘rsataman.`;
+    if(q.includes("tan ol") || q.includes("ayb"))
+      return `Ayblovga munosabatim avvalgi ko‘rsatmamdagi kabi. Men faqat haqiqatda qilgan harakatimni tan olaman, menga tegishli bo‘lmagan holatni tan olmayman.`;
+    if(q.includes("vaqt") || q.includes("qachon"))
+      return `Vaqt bo‘yicha ish materiallarida ko‘rsatilgan ma’lumotdan tashqari aniqroq vaqtni eslay olmayman. Agar oldingi ko‘rsatmam bilan farq bo‘lsa, sud o‘sha bayonnomani ko‘rsatib aniqlashtirishi mumkin.`;
+    if(q.includes("telefon") || q.includes("telegram") || q.includes("yozish"))
+      return low.includes("telegram")||low.includes("telefon") ? `Telefon va yozishmalar bo‘yicha ish materialida mavjud bo‘lgan qismni inkor etmayman, lekin ularning mazmuni mening niyatimni qanday ko‘rsatishi yuzasidan ayblov talqiniga qo‘shilmasligim mumkin.` :
+             `Bu masala bo‘yicha ish materialida menga tegishli aniq ma’lumot bo‘lmasa, yangi fakt to‘qib javob bermayman.`;
+    return `Savolingizni tushundim. Men faqat ushbu kazusdagi o‘zimga ma’lum faktlar doirasida javob beraman: avvalgi ko‘rsatmam va ish materiallarida qayd etilgan versiyamni tasdiqlayman. Savolni aniq bir vaqt, harakat yoki dalilga bog‘lasangiz, aniqroq javob bera olaman.`;
+  }
+
+  if(target==="Jabrlanuvchi"){
+    return `Men faqat o‘zim bevosita ko‘rgan, eshitgan yoki boshdan kechirgan holatlarni ayta olaman. Savoldagi fakt ish materiallarida menga ma’lum bo‘lgan qismga tegishli bo‘lsa, o‘sha doirada javob beraman; taxmin qilmayman.`;
+  }
+
+  return `Savol ish materiallaridagi aniq shaxsga qaratilmagan. Kimga savol berayotganingizni aniqlashtiring.`;
+}
+
+function courtReactionToStudent(item,value){
+  const target=detectQuestionTarget(item,value);
+
+  if(studentEndsQuestions(value)){
+    return {kind:"END"};
+  }
+
+  if(target && looksLikeQuestion(value)){
+    return {kind:"QUESTION",target,answer:answerFromCaseFacts(target,value)};
+  }
+
+  const q=normalizeCourtText(value);
+  if(q.includes("e'tiroz") || q.includes("etiroz")){
+    return {kind:"OBJECTION",answer:
+      `Sud e’tirozingizni qayd etdi. E’tirozning qaysi dalil, savol yoki protsessual harakatga qaratilgani va asosini aniq ko‘rsating. Asos yetarli bo‘lsa, sud tegishli protsessual qaror qabul qiladi.`};
+  }
+  if(q.includes("iltimosnoma") || q.includes("so'rayman") || q.includes("sorayman")){
+    return {kind:"MOTION",answer:
+      `Sud iltimosnomani qayd etdi. Iltimosnomaning predmeti, nima uchun ish uchun ahamiyatli ekani va qaysi harakatni amalga oshirish so‘ralayotganini aniqlashtiring.`};
+  }
+
+  return {kind:"STATEMENT"};
+}
+
+function personNameForTarget(target){
+  const p=currentCase.people||{};
+  if(target==="Sudlanuvchi") return p.defendant||"Sudlanuvchi";
+  if(target==="Jabrlanuvchi") return p.victim||"Jabrlanuvchi";
+  if(target==="Guvoh") return p.witness||"Guvoh";
+  if(target==="Ekspert") return p.expert||"Ekspert";
+  return target;
+}
+
+function reopenStudentTurn(item,message){
+  waitingForStudent=true;
+  $("turnInfo").textContent="🔔 SIZNING NAVBATINGIZ — "+currentRole+" • savol-javob davom etmoqda";
+  $("answer").disabled=false;
+  $("send").disabled=false;
+  $("answer").placeholder=message||"Qo‘shimcha savol bering yoki “Boshqa savolim yo‘q” deb yozing.";
+  $("answer").focus();
+}
+
+
+/* =====================================================
+   TALABA JAVOBINI YUBORISH
+===================================================== */
+
+$("send").onclick=
+sendStudentAnswer;
+
+
+async function sendStudentAnswer(){
+
+if(!waitingForStudent) return;
+
+const value=$("answer").value.trim();
+if(!value){
+  alert("Javobingizni yozing.");
+  return;
+}
+
+const item=flow[flowIndex];
+
+addMessage(
+  "student",
+  "👤 Siz — "+currentRole+" ("+personForRole(currentRole)+")",
+  value
+);
+
+studentAnswers.push({
+  stage:item.stage,
+  prompt:item.prompt || item.text,
+  answer:value
+});
+
+$("answer").value="";
+$("answer").disabled=true;
+$("send").disabled=true;
+waitingForStudent=false;
+
+const reaction=await getCourtEngineReaction(item,value);
+
+/* Talaba savol-javobni o‘zi yakunladi */
+if(reaction.kind==="END"){
+  adaptiveExchangeCount=0;
+  addMessage("judge","⚖️ Sud raisi — "+currentCase.people.judge,
+    `Tushunarli. ${currentRole}, boshqa savolingiz yo‘qligi qayd etildi. Sud majlisi keyingi protsessual bosqichga o‘tadi.`);
+  flowIndex++;
+  setTimeout(runFlow,700);
+  return;
+}
+
+/* Talaba real savol berdi — javob olmaguncha bosqich o‘zgarmaydi */
+if(reaction.kind==="QUESTION"){
+  adaptiveExchangeCount++;
+  setTimeout(()=>{
+    addMessage(
+      reaction.target==="Guvoh" ? "witness" : "party",
+      "👤 "+reaction.target+" — "+personNameForTarget(reaction.target),
+      reaction.answer
+    );
+    rememberCourtExchange(reaction.target,value,reaction.answer,item.stage);
+
+    /* Savol javobidan so‘ng sudya yana talabaning o‘ziga navbat beradi */
+    setTimeout(()=>{
+      addMessage("judge","⚖️ Sud raisi — "+currentCase.people.judge,
+        adaptiveExchangeCount>=MAX_ADAPTIVE_EXCHANGES
+        ? `Savol-javob yetarli darajada davom etdi. ${currentRole}, so‘nggi aniqlashtiruvchi savolingiz bo‘lsa bering yoki “Boshqa savolim yo‘q” deb yozing.`
+        : `${currentRole}, javobni eshitdingiz. Qo‘shimcha savolingiz bormi?`);
+      reopenStudentTurn(item,
+        `Qo‘shimcha savol bering yoki “Boshqa savolim yo‘q” deb yozing.`);
+    },450);
+  },450);
+  return;
+}
+
+/* E’tiroz va iltimosnoma ham jarayonni darhol oldinga surmaydi */
+if(reaction.kind==="OBJECTION" || reaction.kind==="MOTION"){
+  setTimeout(()=>{
+    addMessage("judge","⚖️ Sud raisi — "+currentCase.people.judge,reaction.answer);
+    reopenStudentTurn(item,
+      reaction.kind==="OBJECTION"
+      ? "E’tirozingizning aniq asosini yozing yoki undan voz keching."
+      : "Iltimosnomangizni aniq asoslang yoki undan voz keching.");
+  },450);
+  return;
+}
+
+/* Oddiy bayonot bo‘lsa, mavjud protsess davom etadi */
+adaptiveExchangeCount=0;
+flowIndex++;
+setTimeout(runFlow,600);
+}
+
+
+/* =====================================================
+   SUDYA REJIMI
+===================================================== */
+
+function startJudgeMode(){
+
+$("studentInput")
+.classList.add("hidden");
+
+$("judgeControls")
+.classList.remove("hidden");
+
+$("stageTitle").textContent=
+"Joriy bosqich: Sud majlisini ochish";
+
+$("turnInfo").textContent=
+"👨‍⚖️ SIZ SUDYASIZ — sud jarayonini o‘zingiz boshqarasiz.";
+
+addMessage(
+"system",
+"🎓 Simulyator",
+`Siz sudya rolini tanladingiz.
+
+Endi sud protsessini
+to‘g‘ri ketma-ketlikda
+o‘zingiz olib borishingiz kerak.
+
+Quyidagi protsessual
+harakatlardan keyingisini
+tanlang.`
+);
+
+renderJudgeChoices();
+
+}
+
+
+/* =====================================================
+   SUDYA UCHUN TO‘G‘RI KETMA-KETLIK
+===================================================== */
+
+function getJudgeSequence(){
+
+if(currentDirection==="criminal"){
+
+return [
+
+{
+id:"open",
+label:"Sud majlisini ochish"
+},
+
+{
+id:"attendance",
+label:"Kotibdan davomatni so‘rash"
+},
+
+{
+id:"identity",
+label:"Sudlanuvchining shaxsini aniqlash"
+},
+
+{
+id:"composition",
+label:"Sud tarkibini e’lon qilish"
+},
+
+{
+id:"rights",
+label:"Huquq va majburiyatlarni tushuntirish"
+},
+
+{
+id:"motions",
+label:"Iltimosnoma va e’tirozlarni so‘rash"
+},
+
+{
+id:"charge",
+label:"Prokurorga ayblovni bayon qilish uchun so‘z berish"
+},
+
+{
+id:"defendant",
+label:"Sudlanuvchining ayblovga munosabatini aniqlash"
+},
+
+{
+id:"victim",
+label:"Jabrlanuvchini tinglash"
+},
+
+{
+id:"evidence",
+label:"Dalillarni tekshirishga o‘tish"
+},
+
+{
+id:"witness",
+label:"Guvohni so‘roq qilish"
+},
+
+{
+id:"expert",
+label:"Ekspert xulosasini tekshirish"
+},
+
+{
+id:"debate",
+label:"Sud muzokarasiga o‘tish"
+},
+
+{
+id:"lastword",
+label:"Sudlanuvchiga oxirgi so‘z berish"
+},
+
+{
+id:"deliberation",
+label:"Maslahatxonaga chiqish"
+}
+
+];
+
+}
+
+
+return [
+
+{
+id:"open",
+label:"Sud majlisini ochish"
+},
+
+{
+id:"attendance",
+label:"Davomatni tekshirish"
+},
+
+{
+id:"identity",
+label:"Taraflarning shaxsi va vakolatlarini aniqlash"
+},
+
+{
+id:"rights",
+label:"Huquq va majburiyatlarni tushuntirish"
+},
+
+{
+id:"motions",
+label:"Iltimosnomalarni so‘rash"
+},
+
+{
+id:"claim",
+label:"Talab tarafini tinglash"
+},
+
+{
+id:"response",
+label:"Qarshi tarafni tinglash"
+},
+
+{
+id:"facts",
+label:"Bahsli holatlarni aniqlash"
+},
+
+{
+id:"evidence",
+label:"Dalillarni tekshirish"
+},
+
+{
+id:"debate",
+label:"Yakuniy pozitsiyalarni tinglash"
+},
+
+{
+id:"deliberation",
+label:"Sud hujjatini qabul qilish uchun chiqish"
+}
+
+];
+
+}
+
+
+/* =====================================================
+   SUDYA VARIANTLARI
+===================================================== */
+
+function renderJudgeChoices(){
+
+const sequence=
+getJudgeSequence();
+
+const expectedIndex=
+judgeHistory.length;
+
+if(expectedIndex>=sequence.length){
+
+finishProcedure();
+
+return;
+
+}
+
+$("judgeActions").innerHTML="";
+
+
+/*
+  TO‘G‘RI VARIANT
+*/
+
+const correct=
+sequence[expectedIndex];
+
+
+/*
+  CHALG‘ITUVCHI VARIANTLAR
+*/
+
+let alternatives=
+sequence.filter(
+(x,index)=>
+index!==expectedIndex
+);
+
+
+let options=[
+correct
+];
+
+if(alternatives[0]){
+options.push(alternatives[0]);
+}
+
+if(alternatives[
+alternatives.length-1
+]){
+options.push(
+alternatives[
+alternatives.length-1
+]
+);
+}
+
+
+/*
+  DUPLIKATLARNI OLIB TASHLASH
+*/
+
+options=
+options.filter(
+(item,index,array)=>
+array.findIndex(
+x=>x.id===item.id
+)===index
+);
+
+
+/*
+  ARALASHTIRISH
+*/
+
+options.sort(
+()=>Math.random()-.5
+);
+
+
+options.forEach(action=>{
+
+const button=
+document.createElement("button");
+
+button.className=
+"judgeAction";
+
+button.textContent=
+action.label;
+
+button.onclick=
+()=>judgeSelect(
+action,
+correct
+);
+
+$("judgeActions")
+.appendChild(button);
+
+});
+
+}
+
+
+/* =====================================================
+   SUDYA TANLOVI
+===================================================== */
+
+function judgeSelect(
+selected,
+correct
+){
+
+const isCorrect=
+selected.id===correct.id;
+
+judgeHistory.push({
+
+selected:selected.label,
+
+correct:correct.label,
+
+isCorrect
+
+});
+
+
+if(!isCorrect){
+
+addMessage(
+"student",
+"👨‍⚖️ Siz — Sudya",
+selected.label
+);
+
+addMessage(
+"system",
+"🎓 Protsessual nazorat",
+`Bu bosqichda protsessual
+ketma-ketlik bo‘yicha
+kutilgan harakat:
+
+${correct.label}
+
+Simulyatsiya davom etadi,
+ammo baholashda bu
+hisobga olinadi.`
+);
+
+}else{
+
+addMessage(
+"student",
+"👨‍⚖️ Siz — Sudya",
+selected.label
+);
+
+}
+
+
+/*
+  AI ISHTIROKCHILAR
+  SUDYANING HARAKATIGA JAVOB BERADI
+*/
+
+simulateJudgeAction(
+correct.id
+);
+
+renderJudgeChoices();
+
+}
+
+
+/* =====================================================
+   SUDYA HARAKATIGA JAVOB
+===================================================== */
+
+function simulateJudgeAction(action){
+
+const p=
+currentCase.people;
+
+$("stageTitle").textContent=
+"Joriy bosqich: "
++
+action;
+
+
+if(action==="open"){
+
+addMessage(
+"clerk",
+"👩‍💼 Sud majlisi kotibi — "+p.clerk,
+"Sud majlisi boshlandi."
+);
+
+}
+
+
+else if(action==="attendance"){
+
+addMessage(
+"clerk",
+"👩‍💼 Sud majlisi kotibi — "+p.clerk,
+"Chaqirilgan ishtirokchilarning kelgani haqida sudga ma’lum qilaman."
+);
+
+}
+
+
+else if(action==="identity"){
+
+addMessage(
+"party",
+"👤 Protsess ishtirokchisi",
+"Sud tomonidan so‘ralgan shaxsiy va protsessual ma’lumotlarni taqdim etaman."
+);
+
+}
+
+
+else if(action==="rights"){
+
+addMessage(
+"party",
+"⚖️ Taraflar",
+"Protsessual huquq va majburiyatlar tushunarli."
+);
+
+}
+
+
+else if(action==="motions"){
+
+addMessage(
+"prosecutor",
+"⚖️ Taraf",
+"Hozircha qo‘shimcha iltimosnomam yo‘q."
+);
+
+}
+
+
+else if(action==="charge"){
+
+addMessage(
+"prosecutor",
+"👩‍💼 Davlat ayblovchisi — "+p.prosecutor,
+"Ayblovning mazmuni va ayblov tomoni tayanayotgan dalillarni sudga bayon qilaman."
+);
+
+}
+
+
+else if(action==="defendant"){
+
+addMessage(
+"party",
+"👤 Sudlanuvchi — "+p.defendant,
+"Ayblov mazmunini tushundim va unga o‘z munosabatimni bildiraman."
+);
+
+}
+
+
+else if(action==="victim"){
+
+addMessage(
+"victim",
+"👤 Jabrlanuvchi — "+p.victim,
+"Hodisa bo‘yicha o‘zimga ma’lum holatlarni sudga bayon qilaman."
+);
+
+}
+
+
+else if(action==="witness"){
+
+addMessage(
+"witness",
+"👤 Guvoh — "+p.witness,
+getWitnessOpening()
+);
+
+}
+
+
+else if(action==="expert"){
+
+addMessage(
+"witness",
+"🔬 Ekspert",
+"Sudning savollariga ekspert xulosasi doirasida javob berishga tayyorman."
+);
+
+}
+
+
+else if(action==="claim"){
+
+addMessage(
+"party",
+"⚖️ Talab tarafi",
+"Talabimning faktik va huquqiy asoslarini sudga bayon qilaman."
+);
+
+}
+
+
+else if(action==="response"){
+
+addMessage(
+"party",
+"⚖️ Qarshi taraf",
+"Talabga nisbatan e’tirozlarimni bayon qilaman."
+);
+
+}
+
+
+else if(action==="evidence"){
+
+const ev=(currentCase.evidenceDossier||[]);
+addMessage(
+"system",
+"📁 Ish materiallari",
+"Sud ishdagi dalillarni bevosita tekshirishga o‘tdi." +
+(ev.length ? "<br><br>"+ev.map((x,i)=>(i+1)+". "+x).join("<br>") : "")
+);
+
+}
+
+
+else if(action==="debate"){
+
+addMessage(
+"party",
+"⚖️ Taraflar",
+"Yakuniy protsessual pozitsiyalarni bayon qilishga tayyormiz."
+);
+
+}
+
+
+else if(action==="lastword"){
+
+addMessage(
+"party",
+"👤 Sudlanuvchi — "+p.defendant,
+"Suddan ishning barcha holatlarini hisobga olishingizni so‘rayman."
+);
+
+}
+
+
+else if(action==="deliberation"){
+
+addMessage(
+"system",
+"⚖️ Sud",
+"Sud sud hujjatini qabul qilish uchun maslahatxonaga chiqdi."
+);
+
+}
+
+}
+
+
+/* =====================================================
+   GUVOH OCHILISHI
+===================================================== */
+
+function getWitnessOpening(){
+
+if(
+currentDirection==="criminal"
+&&
+currentCaseIndex===0
+){
+
+return `
+Men ${currentCase.people.defendant}ni
+hodisa kuni taxminan soat 19:30 da
+jabrlanuvchi yashaydigan
+ko‘cha yaqinida ko‘rganman.
+
+Boshqa savollarga faqat
+o‘zim bevosita bilgan
+holatlar doirasida
+javob beraman.
+`;
+
+}
+
+return `
+Men ish bo‘yicha
+o‘zim bevosita bilgan
+holatlar yuzasidan
+savollarga javob berishga
+tayyorman.
+`;
+
+}
+
+
+/* =====================================================
+   PROTSESS YAKUNI
+===================================================== */
+
+function finishProcedure(){
+
+$("turnInfo").textContent=
+"✅ Sud majlisining protsessual qismi yakunlandi.";
+
+$("answer").disabled=true;
+
+$("send").disabled=true;
+
+$("judgeControls")
+.classList.add("hidden");
+
+addMessage(
+"system",
+"📊 Simulyator",
+"Sud jarayoni yakunlandi. Endi professional baholashni ochishingiz mumkin."
+);
+
+}
+
+
+/* =====================================================
+   BAHOLASH
+===================================================== */
+
+$("finish").onclick=
+evaluateSimulation;
+
+
+function evaluateSimulation(){
+
+if(
+currentRole!=="Sudya"
+&&
+studentAnswers.length===0
+){
+
+alert(
+"Baholash uchun sud jarayonida kamida bitta javob bering."
+);
+
+return;
+
+}
+
+
+let procedural=0;
+let legal=0;
+let evidence=0;
+let response=0;
+let speech=0;
+
+
+if(currentRole==="Sudya"){
+
+const correct=
+judgeHistory.filter(
+x=>x.isCorrect
+).length;
+
+const total=
+Math.max(
+judgeHistory.length,
+1
+);
+
+procedural=
+Math.round(
+(correct/total)*20
+);
+
+legal=15;
+
+evidence=15;
+
+response=15;
+
+speech=15;
+
+}else{
+
+const allText=
+studentAnswers
+.map(x=>x.answer)
+.join(" ")
+.toLowerCase();
+
+const wordCount=
+allText
+.split(/\s+/)
+.filter(Boolean)
+.length;
+
+
+const legalKeywords=[
+"qonun",
+"modda",
+"kodeks",
+"huquq",
+"protsess",
+"norma",
+"jpk",
+"jk",
+"fpk",
+"ipk",
+"yosh",
+"voyaga yetmagan",
+"muomala layoqati",
+"javobgarlik yoshi"
+];
+
+
+const evidenceKeywords=[
+"dalil",
+"guvoh",
+"ekspert",
+"video",
+"hujjat",
+"bayonnoma",
+"yozuv",
+"ekspertiza"
+];
+
+
+const logicKeywords=[
+"sababi",
+"shuning uchun",
+"asosida",
+"birinchidan",
+"ikkinchidan",
+"natijada",
+"xulosa"
+];
+
+
+const speechKeywords=[
+"hurmatli sud",
+"suddan so‘rayman",
+"e’tiroz",
+"iltimos"
+];
+
+
+const count=
+(array)=>
+array.filter(
+word=>allText.includes(word)
+).length;
+
+
+procedural=
+Math.min(
+20,
+10+studentAnswers.length
+);
+
+
+legal=
+Math.min(
+20,
+9+count(legalKeywords)*2
+);
+
+
+evidence=
+Math.min(
+20,
+9+count(evidenceKeywords)*2
+);
+
+
+response=
+Math.min(
+20,
+10+count(logicKeywords)*2
+);
+
+
+speech=
+Math.min(
+20,
+10
++
+count(speechKeywords)
++
+Math.floor(wordCount/45)
+);
+
+}
+
+
+const totalScore=
+procedural
++
+legal
++
+evidence
++
+response
++
+speech;
+
+
+$("totalScore").textContent=
+totalScore+"/100";
+
+
+const scores=[
+
+["Protsessual tartib",procedural],
+
+["Huquqiy asoslash",legal],
+
+["Dalillar bilan ishlash",evidence],
+
+["Savol va e’tirozlarga javob",response],
+
+["Sud nutqi",speech]
+
+];
+
+
+$("scoreGrid").innerHTML="";
+
+scores.forEach(score=>{
+
+const div=
+document.createElement("div");
+
+div.className="scoreBox";
+
+div.innerHTML=
+`
+<b>${score[0]}</b>
+
+<div style="
+font-size:30px;
+font-weight:bold;
+margin-top:7px
+">
+${score[1]}/20
+</div>
+`;
+
+$("scoreGrid")
+.appendChild(div);
+
+});
+
+
+renderFeedback();
+
+showScreen("result");
+
+}
+
+
+/* =====================================================
+   BATAFSIL TAHLIL
+===================================================== */
+
+function renderFeedback(){
+
+if(currentRole==="Sudya"){
+
+const mistakes=
+judgeHistory.filter(
+x=>!x.isCorrect
+);
+
+$("generalFeedback").innerHTML=
+`
+<h3>🧠 Sudya faoliyati tahlili</h3>
+
+Siz sud jarayonini
+mustaqil boshqardingiz.
+
+Simulyator protsessual
+harakatlarni tanlash
+ketma-ketligini baholadi.
+
+<br><br>
+
+Noto‘g‘ri ketma-ketliklar:
+<b>${mistakes.length}</b>.
+`;
+
+
+$("betterFeedback").innerHTML=
+`
+<h3>💡 Yuqoriroq ball olish uchun</h3>
+
+Sudya sifatida
+har bir keyingi protsessual
+harakatni ishning
+joriy bosqichiga qarab
+tanlash kerak.
+
+Masalan,
+dalillarni tekshirishdan
+oldin taraflarning
+protsessual holati,
+talab yoki ayblov mazmuni
+va iltimosnomalar
+aniqlashtirilishi lozim.
+`;
+
+}else{
+
+const shortest=
+studentAnswers
+.slice()
+.sort(
+(a,b)=>
+a.answer.length-b.answer.length
+)[0];
+
+
+$("generalFeedback").innerHTML=
+`
+<h3>🧠 Sizning faoliyatingiz tahlili</h3>
+
+Siz:
+<b>${currentRole}</b>
+rolida ishtirok etdingiz.
+
+Simulyatsiya davomida
+<b>${studentAnswers.length}</b>
+marta faol protsessual
+javob berdingiz.
+
+Sizning javoblaringiz
+rolingizga mosligi,
+dalillardan foydalanish,
+huquqiy asoslash,
+savollarga javob
+va sud nutqi bo‘yicha
+baholandi.
+`;
+
+
+$("betterFeedback").innerHTML=
+`
+<h3>
+💡 Mana bunday desangiz yuqoriroq ball olardingiz
+</h3>
+
+<b>Siz nima dedingiz:</b>
+
+<br><br>
+
+“${escapeHTML(shortest.answer)}”
+
+<br><br>
+
+<b>Nimasi yetishmadi:</b>
+
+Javobni yanada kuchli qilish uchun
+pozitsiyangiz,
+uning sababi,
+tegishli dalil,
+huquqiy asos
+va suddan so‘rov
+aniq ajratilishi kerak.
+
+<br><br>
+
+<b>Kuchliroq variant:</b>
+
+<br><br>
+
+“Hurmatli sud,
+mening protsessual pozitsiyam
+shundan iboratki, ...
+
+Bunga sabab ...
+
+Mazkur holat
+ishdagi ... dalil bilan
+tasdiqlanadi.
+
+Ushbu masalaga tegishli
+qonunchilik normalarini
+inobatga olib,
+suddan ... so‘rayman.”
+
+<br><br>
+
+Shunday tuzilma bilan
+javob berganingizda
+fikringiz aniqroq,
+professionalroq
+va huquqiy jihatdan
+kuchliroq bo‘lardi.
+`;
+
+}
+
+
+$("lawFeedback").innerHTML=
+`
+<h3>⚖️ Qonunchilik bo‘yicha tahlil</h3>
+
+<div style="padding:14px;border:1px solid #d7c7a8;border-left:5px solid #173d2f;background:#fffaf0;margin:12px 0 18px">
+<b>🔎 Suddan keyingi professional tahlil</b><br><br>
+${buildPostHearingIssueReview(currentCase)}
+</div>
+
+Mazkur kazusda
+quyidagi yo‘nalishdagi
+normalar tekshirilishi kerak:
+
+<br><br>
+
+<b>
+${currentCase.lawTopics.join("<br>")}
+</b>
+
+<br><br>
+
+Yakuniy versiyada
+ushbu blok kazusga
+bevosita tegishli
+aniq moddalarni,
+zarur hollarda
+Oliy sud Plenumi
+tushuntirishlarini
+va boshqa tegishli
+normativ-huquqiy hujjatlarni
+ko‘rsatishi kerak.
+
+<br><br>
+
+Amaldagi modda va
+hujjat tahriri
+LexUZ rasmiy bazasidan
+tekshirilishi lozim.
+
+<br><br>
+
+<a
+href="https://lex.uz/"
+target="_blank"
+rel="noopener"
+>
+🔗 LexUZ rasmiy qonunchilik bazasi
+</a>
+`;
+
+}
+
+
+/* =====================================================
+   HTML XAVFSIZLIGI
+===================================================== */
+
+function escapeHTML(value){
+
+return value.replace(
+/[&<>"']/g,
+char=>{
+
+const map={
+
+"&":"&amp;",
+
+"<":"&lt;",
+
+">":"&gt;",
+
+'"':"&quot;",
+
+"'":"&#039;"
+
+};
+
+return map[char];
+
+}
+);
+
+}
+
+
+/* =====================================================
+   CTRL + ENTER
+===================================================== */
+
+$("answer")
+.addEventListener(
+"keydown",
+event=>{
+
+if(
+event.key==="Enter"
+&&
+event.ctrlKey
+){
+
+sendStudentAnswer();
+
+}
+
+});
+
+
+
+
+/* =====================================================
+   DOIMIY NAVIGATSIYA
+===================================================== */
+
+$("navHome").onclick=()=>{
+  clearInterval(timerInterval);
+  showScreen("home");
+};
+
+$("navCases").onclick=()=>{
+  clearInterval(timerInterval);
+  if(currentDirection) openDirection(currentDirection);
+  else showScreen("home");
+};
+
+$("navBack").onclick=()=>{
+  const visible=screens.find(id=>!$(id).classList.contains("hidden"));
+  clearInterval(timerInterval);
+  if(visible==="casesScreen") showScreen("home");
+  else if(visible==="prepare") openDirection(currentDirection);
+  else if(visible==="court") showScreen("prepare");
+  else if(visible==="result") showScreen("court");
+  else showScreen("home");
+};
+
+/* =====================================================
+   ORQAGA
+===================================================== */
+
+$("backHome").onclick=()=>{
+
+clearInterval(timerInterval);
+
+showScreen("home");
+
+};
+
+
+$("backCases").onclick=()=>{
+
+clearInterval(timerInterval);
+
+openDirection(
+currentDirection
+);
+
+};
+
+
+$("newSimulation").onclick=()=>{
+
+currentDirection=null;
+
+currentCaseIndex=null;
+
+currentCase=null;
+
+currentRole=null;
+
+studentAnswers=[];
+
+judgeHistory=[];
+
+showScreen("home");
+
+};
+
+
+
+/* =====================================================
+   UZ / RU / EN — TO‘LIQ INTERFEYS TIL TIZIMI
+===================================================== */
+const I18N={
+ru:{
+"HUQUQIY AI — PROFESSIONAL SUD SIMULYATORI":"HUQUQIY AI — ПРОФЕССИОНАЛЬНЫЙ СУДЕБНЫЙ СИМУЛЯТОР",
+"Elektron sud amaliyoti • rolga mos protsessual trening • 60 ta o‘quv ishi":"Электронная судебная практика • процессуальный тренинг по ролям • 40 учебных дел",
+"Sud yurituvi yo‘nalishini tanlang":"Выберите вид судопроизводства","Jinoyat protsessi":"Уголовный процесс","Fuqarolik protsessi":"Гражданский процесс","Iqtisodiy protsess":"Экономический процесс","Ma’muriy protsess":"Административный процесс","10 ta kazus":"10 учебных дел","10 ta o‘quv ishidan birini tanlang.":"Выберите одно из 10 учебных дел.",
+"← ORQAGA":"← НАЗАД","⌂ ASOSIY MENYU":"⌂ ГЛАВНОЕ МЕНЮ","▣ ISHLAR RO‘YXATI":"▣ СПИСОК ДЕЛ","← Orqaga":"← Назад","← Kazuslarga qaytish":"← Вернуться к делам","Sud simulyatori":"Судебный симулятор","Joriy bo‘lim":"Текущий раздел",
+"📖 Ish holati":"📖 Обстоятельства дела","👥 Sud majlisi ishtirokchilari":"👥 Участники судебного заседания","⚖️ Sud majlisidagi maqomingiz":"⚖️ Ваша процессуальная роль","Sud jarayonida qaysi protsessual rolni bajarishingizni tanlang.":"Выберите процессуальную роль, которую вы будете выполнять в судебном заседании.","2-BOSQICH · ROL TANLASH":"ЭТАП 2 · ВЫБОР РОЛИ","📚 Huquqiy manbalar":"📚 Правовые источники","Rasmiy bazalar":"Официальные источники","LexUZ — Qonunchilik bazasi ↗":"LexUZ — База законодательства ↗","Kodekslar, qonunlar, qarorlar va boshqa normativ-huquqiy hujjatlarni tekshirish.":"Проверка кодексов, законов, постановлений и иных нормативно-правовых актов.","Oliy sud — rasmiy portal ↗":"Верховный суд — официальный портал ↗","Sud tizimi, sud amaliyoti va rasmiy sud ma’lumotlari.":"Судебная система, судебная практика и официальная судебная информация.","⏱ Tayyorlanish vaqti":"⏱ Время на подготовку","▶ SUD JARAYONINI BOSHLASH":"▶ НАЧАТЬ СУДЕБНОЕ ЗАСЕДАНИЕ","SUD MAJLISI ZALI — ELEKTRON BAYONNOMA":"ЗАЛ СУДЕБНОГО ЗАСЕДАНИЯ — ЭЛЕКТРОННЫЙ ПРОТОКОЛ","Joriy bosqich":"Текущий этап","Sud jarayoni boshlandi":"Судебное заседание началось","Sudya sifatida keyingi protsessual harakatni tanlang":"Как судья выберите следующее процессуальное действие","BAYONOTNI SUDGA TAQDIM ETISH":"ПРЕДСТАВИТЬ ЗАЯВЛЕНИЕ СУДУ","Ctrl + Enter orqali ham javob yuborishingiz mumkin.":"Ответ также можно отправить сочетанием Ctrl + Enter.","MAJLISNI YAKUNLASH VA BAHOLASH":"ЗАВЕРШИТЬ ЗАСЕДАНИЕ И ОЦЕНИТЬ","📊 Professional baholash":"📊 Профессиональная оценка","Eslatma:":"Примечание:","Yangi sud simulyatsiyasi":"Новая судебная симуляция",
+"Sudya":"Судья","Sud majlisi kotibi":"Секретарь судебного заседания","Prokuror":"Прокурор","Himoyachi":"Защитник","Sudlanuvchi":"Подсудимый","Jabrlanuvchi":"Потерпевший","Jabrlanuvchi vakili":"Представитель потерпевшего","Guvoh":"Свидетель","Ekspert":"Эксперт","Da’vogar":"Истец","Javobgar":"Ответчик","Da’vogar vakili":"Представитель истца","Javobgar vakili":"Представитель ответчика","Korxona rahbari":"Руководитель предприятия","Arizachi":"Заявитель","Arizachi vakili":"Представитель заявителя","Ma’muriy organ vakili":"Представитель административного орган",
+"O‘g‘rilik ishi":"Дело о краже","Tan jarohati yetkazish":"Причинение телесных повреждений","Firibgarlik":"Мошенничество","Yo‘l-transport hodisasi":"Дорожно-транспортное происшествие","Talonchilik":"Грабёж","Hujjatni qalbakilashtirish":"Подделка документа","Mansab vakolatidan foydalanish":"Использование должностных полномочий","Bezorilik":"Хулиганство","Mulkka qasddan zarar yetkazish":"Умышленное повреждение имущества","Elektron dalilning maqbulligi":"Допустимость электронного доказательства",
+"Nikohdan ajratish":"Расторжение брака","Aliment undirish":"Взыскание алиментов","Er-xotin mol-mulkini bo‘lish":"Раздел имущества супругов","Qarz undirish":"Взыскание долга","Uy-joy nizosi":"Жилищный спор","Meros nizosi":"Наследственный спор","Yetkazilgan zararni undirish":"Взыскание причинённого ущерба","Shartnoma bo‘yicha nizo":"Спор по договору","Bolaning yashash joyini belgilash":"Определение места жительства ребёнка","Sha’n va qadr-qimmatni himoya qilish":"Защита чести и достоинства",
+"Yetkazib berish shartnomasi":"Договор поставки","Qarzdorlikni undirish":"Взыскание задолженности","Pudrat shartnomasi":"Договор подряда","Ijara nizosi":"Спор по аренде","To‘lov majburiyati":"Обязательство по оплате","Xizmat ko‘rsatish nizosi":"Спор об оказании услуг","Shartnomani bekor qilish":"Расторжение договора","Zararni undirish":"Взыскание убытков","Korporativ nizo":"Корпоративный спор","Majburiyatni bajarmaslik":"Неисполнение обязательства",
+"Davlat organi qaroriga shikoyat":"Обжалование решения государственного органа","Mansabdor shaxs harakatiga shikoyat":"Обжалование действий должностного лица","Litsenziya berishni rad etish":"Отказ в выдаче лицензии","Ro‘yxatdan o‘tkazishni rad etish":"Отказ в регистрации","Ruxsatnoma bo‘yicha nizo":"Спор о разрешении","Kadastr organi qarori":"Решение кадастрового органа","Soliq organi qarori":"Решение налогового органа","Davlat xizmatini ko‘rsatishni rad etish":"Отказ в предоставлении государственной услуги","Ma’muriy organning harakatsizligi":"Бездействие административного органа","Ma’muriy hujjatni haqiqiy emas deb topish":"Признание административного акта недействительным",
+"Kasbi:":"Профессия:","Suddagi maqomi:":"Процессуальный статус:","SIZNING ROLINGIZ":"ВАША РОЛЬ","SHU ROLDA ISHTIROK ETISH":"УЧАСТВОВАТЬ В ЭТОЙ РОЛИ","ROLNI TASDIQLASH VA SUDGA TAYYORLANISH":"ПОДТВЕРДИТЬ РОЛЬ И ПОДГОТОВИТЬСЯ К СУДУ"
+},
+en:{
+"HUQUQIY AI — PROFESSIONAL SUD SIMULYATORI":"HUQUQIY AI — PROFESSIONAL COURT SIMULATOR","Elektron sud amaliyoti • rolga mos protsessual trening • 60 ta o‘quv ishi":"Electronic court practice • role-based procedural training • 40 training cases","Sud yurituvi yo‘nalishini tanlang":"Choose a type of court proceeding","Jinoyat protsessi":"Criminal Procedure","Fuqarolik protsessi":"Civil Procedure","Iqtisodiy protsess":"Economic Procedure","Ma’muriy protsess":"Administrative Procedure","10 ta kazus":"10 training cases","10 ta o‘quv ishidan birini tanlang.":"Choose one of 10 training cases.",
+"← ORQAGA":"← BACK","⌂ ASOSIY MENYU":"⌂ MAIN MENU","▣ ISHLAR RO‘YXATI":"▣ CASE LIST","← Orqaga":"← Back","← Kazuslarga qaytish":"← Back to cases","Sud simulyatori":"Court simulator","Joriy bo‘lim":"Current section","📖 Ish holati":"📖 Case facts","👥 Sud majlisi ishtirokchilari":"👥 Court hearing participants","⚖️ Sud majlisidagi maqomingiz":"⚖️ Your procedural role","Sud jarayonida qaysi protsessual rolni bajarishingizni tanlang.":"Choose the procedural role you will perform during the court hearing.","2-BOSQICH · ROL TANLASH":"STEP 2 · ROLE SELECTION","📚 Huquqiy manbalar":"📚 Legal sources","Rasmiy bazalar":"Official sources","LexUZ — Qonunchilik bazasi ↗":"LexUZ — Legislation Database ↗","Kodekslar, qonunlar, qarorlar va boshqa normativ-huquqiy hujjatlarni tekshirish.":"Check codes, laws, resolutions and other regulatory legal acts.","Oliy sud — rasmiy portal ↗":"Supreme Court — official portal ↗","Sud tizimi, sud amaliyoti va rasmiy sud ma’lumotlari.":"Court system, judicial practice and official court information.","⏱ Tayyorlanish vaqti":"⏱ Preparation time","▶ SUD JARAYONINI BOSHLASH":"▶ START COURT HEARING","SUD MAJLISI ZALI — ELEKTRON BAYONNOMA":"COURTROOM — ELECTRONIC RECORD","Joriy bosqich":"Current stage","Sud jarayoni boshlandi":"Court hearing started","Sudya sifatida keyingi protsessual harakatni tanlang":"As the judge, choose the next procedural action","BAYONOTNI SUDGA TAQDIM ETISH":"SUBMIT STATEMENT TO THE COURT","Ctrl + Enter orqali ham javob yuborishingiz mumkin.":"You can also submit your answer with Ctrl + Enter.","MAJLISNI YAKUNLASH VA BAHOLASH":"END HEARING AND EVALUATE","📊 Professional baholash":"📊 Professional evaluation","Eslatma:":"Note:","Yangi sud simulyatsiyasi":"New court simulation",
+"Sudya":"Judge","Sud majlisi kotibi":"Court Clerk","Prokuror":"Prosecutor","Himoyachi":"Defense Counsel","Sudlanuvchi":"Defendant","Jabrlanuvchi":"Victim","Jabrlanuvchi vakili":"Victim’s Representative","Guvoh":"Witness","Ekspert":"Expert","Da’vogar":"Claimant","Javobgar":"Respondent","Da’vogar vakili":"Claimant’s Representative","Javobgar vakili":"Respondent’s Representative","Korxona rahbari":"Company Director","Arizachi":"Applicant","Arizachi vakili":"Applicant’s Representative","Ma’muriy organ vakili":"Administrative Authority Representative",
+"O‘g‘rilik ishi":"Theft Case","Tan jarohati yetkazish":"Infliction of Bodily Injury","Firibgarlik":"Fraud","Yo‘l-transport hodisasi":"Road Traffic Accident","Talonchilik":"Robbery","Hujjatni qalbakilashtirish":"Document Forgery","Mansab vakolatidan foydalanish":"Abuse of Official Powers","Bezorilik":"Hooliganism","Mulkka qasddan zarar yetkazish":"Intentional Damage to Property","Elektron dalilning maqbulligi":"Admissibility of Electronic Evidence",
+"Nikohdan ajratish":"Divorce","Aliment undirish":"Recovery of Child Support","Er-xotin mol-mulkini bo‘lish":"Division of Marital Property","Qarz undirish":"Debt Recovery","Uy-joy nizosi":"Housing Dispute","Meros nizosi":"Inheritance Dispute","Yetkazilgan zararni undirish":"Recovery of Damages","Shartnoma bo‘yicha nizo":"Contract Dispute","Bolaning yashash joyini belgilash":"Determination of the Child’s Residence","Sha’n va qadr-qimmatni himoya qilish":"Protection of Honour and Dignity",
+"Yetkazib berish shartnomasi":"Supply Contract","Qarzdorlikni undirish":"Recovery of Indebtedness","Pudrat shartnomasi":"Works Contract","Ijara nizosi":"Lease Dispute","To‘lov majburiyati":"Payment Obligation","Xizmat ko‘rsatish nizosi":"Services Dispute","Shartnomani bekor qilish":"Termination of Contract","Zararni undirish":"Recovery of Losses","Korporativ nizo":"Corporate Dispute","Majburiyatni bajarmaslik":"Failure to Perform an Obligation",
+"Davlat organi qaroriga shikoyat":"Challenge to a State Authority Decision","Mansabdor shaxs harakatiga shikoyat":"Challenge to an Official’s Action","Litsenziya berishni rad etish":"Refusal to Issue a Licence","Ro‘yxatdan o‘tkazishni rad etish":"Refusal of Registration","Ruxsatnoma bo‘yicha nizo":"Permit Dispute","Kadastr organi qarori":"Decision of the Cadastral Authority","Soliq organi qarori":"Decision of the Tax Authority","Davlat xizmatini ko‘rsatishni rad etish":"Refusal to Provide a Public Service","Ma’muriy organning harakatsizligi":"Inaction of an Administrative Authority","Ma’muriy hujjatni haqiqiy emas deb topish":"Invalidation of an Administrative Act",
+"Kasbi:":"Profession:","Suddagi maqomi:":"Procedural status:","SIZNING ROLINGIZ":"YOUR ROLE","SHU ROLDA ISHTIROK ETISH":"PARTICIPATE IN THIS ROLE","ROLNI TASDIQLASH VA SUDGA TAYYORLANISH":"CONFIRM ROLE AND PREPARE FOR COURT"
+}}
+;
+const I18N_REPL={ru:[["Mazkur o‘quv ishida taraflar o‘rtasida","В данном учебном деле между сторонами"],["huquqiy nizo mavjud.","имеется правовой спор."],["Da’vo yoki ariza tarafining talabi","Требование по иску или заявлению"],["tegishli huquq buzilganligi bilan","обосновывается нарушением соответствующего права"],["asoslantirilmoqda.","."],["Qarshi taraf esa talabga e’tiroz","Другая сторона возражает против требования"],["bildirib, o‘z dalillari va hujjatlariga","и ссылается на свои доказательства и документы"],["tayanmoqda.","."],["Ishda yozma hujjatlar,","В деле имеются письменные документы,"],["taraflarning tushuntirishlari va","объяснения сторон и"],["boshqa dalillar mavjud.","другие доказательства."],["Sud majlisida talaba o‘zining","В судебном заседании студент действует"],["tanlagan protsessual rolidan","исходя из выбранной"],["kelib chiqib harakat qiladi.","процессуальной роли."],["Barcha ism-shariflar va vaziyatlar","Все имена и обстоятельства"],["o‘quv simulyatsiyasi uchun to‘qima.","вымышлены для учебной симуляции."],["Kazus №","Дело №"],["Siz sudyasiz.","Вы — судья."],["Siz da’vogarsiz.","Вы — истец."],["Siz javobgarsiz.","Вы — ответчик."],["Siz sud majlisini boshqarasiz.","Вы руководите судебным заседанием."],["Sizning vazifangiz","Ваша задача"],["Suddagi maqomi","Процессуальный статус"],["Kasbi","Профессия"]],en:[["Mazkur o‘quv ishida taraflar o‘rtasida","In this training case, the parties have"],["huquqiy nizo mavjud.","a legal dispute."],["Da’vo yoki ariza tarafining talabi","The claim or application is"],["tegishli huquq buzilganligi bilan","based on an alleged violation of the relevant right"],["asoslantirilmoqda.","."],["Qarshi taraf esa talabga e’tiroz","The opposing party objects to the claim"],["bildirib, o‘z dalillari va hujjatlariga","and relies on its evidence and documents"],["tayanmoqda.","."],["Ishda yozma hujjatlar,","The case contains written documents,"],["taraflarning tushuntirishlari va","the parties’ explanations and"],["boshqa dalillar mavjud.","other evidence."],["Sud majlisida talaba o‘zining","During the hearing, the student acts"],["tanlagan protsessual rolidan","according to the selected"],["kelib chiqib harakat qiladi.","procedural role."],["Barcha ism-shariflar va vaziyatlar","All names and circumstances"],["o‘quv simulyatsiyasi uchun to‘qima.","are fictional and created for training."],["Kazus №","Case No. "],["Siz sudyasiz.","You are the judge."],["Siz da’vogarsiz.","You are the claimant."],["Siz javobgarsiz.","You are the respondent."],["Siz sud majlisini boshqarasiz.","You preside over the court hearing."],["Sizning vazifangiz","Your task"],["Suddagi maqomi","Procedural status"],["Kasbi","Profession"]]};
+let uiLang=localStorage.getItem('huquqiy_ai_lang')||'uz';
+const originalText=new WeakMap();
+function translateString(v,lang){if(lang==='uz')return v;let t=I18N[lang]?.[v.trim()];if(t!==undefined)return v.replace(v.trim(),t);let out=v;for(const [a,b] of (I18N_REPL[lang]||[]))out=out.split(a).join(b);for(const [a,b] of Object.entries(I18N[lang]||{}))out=out.split(a).join(b);return out;}
+function translateNode(n,lang){if(n.nodeType===3){if(!originalText.has(n))originalText.set(n,n.nodeValue);const base=originalText.get(n);if(base.trim())n.nodeValue=translateString(base,lang);return;}if(n.nodeType!==1)return;if(n.matches('.langSwitch,.langSwitch *,.langLabel'))return;for(const c of n.childNodes)translateNode(c,lang);if(n.tagName==='TEXTAREA'||n.tagName==='INPUT'){if(!n.dataset.uzPlaceholder)n.dataset.uzPlaceholder=n.getAttribute('placeholder')||'';const p=n.dataset.uzPlaceholder;if(lang==='ru'&&p)n.setAttribute('placeholder',p==='Tanlagan rolingiz nomidan javob bering...'?'Ответьте от имени выбранной вами роли...':translateString(p,lang));else if(lang==='en'&&p)n.setAttribute('placeholder',p==='Tanlagan rolingiz nomidan javob bering...'?'Respond on behalf of your selected role...':translateString(p,lang));else n.setAttribute('placeholder',p);}}
+function applyLanguage(lang){uiLang=lang;localStorage.setItem('huquqiy_ai_lang',lang);document.documentElement.lang=lang==='uz'?'uz':lang;document.querySelectorAll('.langBtn').forEach(b=>b.classList.toggle('active',b.dataset.lang===lang));translateNode(document.body,lang);}
+let langBusy=false;const langObserver=new MutationObserver(ms=>{if(langBusy||uiLang==='uz')return;langBusy=true;for(const m of ms)for(const n of m.addedNodes)translateNode(n,uiLang);langBusy=false;});langObserver.observe(document.body,{childList:true,subtree:true});
+document.querySelectorAll('.langBtn').forEach(b=>b.onclick=()=>{langBusy=true;applyLanguage(b.dataset.lang);langBusy=false;});
+setTimeout(()=>applyLanguage(uiLang),0);
+
+</script>
+
+
+<style id="hai-tests-v11">
+#portalChoice,#testHub,#testTopics,#testRunner,#testResult{display:none}
+.haiPortal{max-width:1180px;margin:34px auto;padding:0 20px}
+.haiHero{padding:28px;border:1px solid var(--hai-line,#d4af37);border-radius:24px;background:linear-gradient(145deg,rgba(9,31,63,.98),rgba(13,45,86,.94));box-shadow:0 22px 60px rgba(0,0,0,.3)}
+.haiChoiceGrid,.haiCodeGrid,.haiTopicGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:24px}
+.haiChoice,.haiCode,.haiTopic{cursor:pointer;text-align:left;padding:25px;border-radius:20px;border:1px solid rgba(212,175,55,.4);background:linear-gradient(145deg,#0b2a54,#061a36);color:#fff;box-shadow:0 16px 38px rgba(0,0,0,.24)}
+.haiChoice:hover,.haiCode:hover,.haiTopic:hover{border-color:#d4af37;transform:translateY(-2px)}
+.haiChoice b,.haiCode b,.haiTopic b{display:block;color:#f2d77c;font-size:1.25rem;margin-bottom:8px}
+.haiChoice small,.haiCode small,.haiTopic small{color:#c7d1df;font-size:.95rem}
+.haiTop{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+.haiBack{padding:11px 16px;border:1px solid rgba(212,175,55,.45);border-radius:13px;background:#0d3568;color:#fff;font-weight:750;cursor:pointer}
+.haiProgress{height:11px;background:#06162f;border-radius:20px;overflow:hidden;margin:14px 0 24px;border:1px solid rgba(212,175,55,.25)}
+.haiProgress>i{display:block;height:100%;background:linear-gradient(90deg,#9b7415,#d4af37,#f2d77c);width:0}
+.haiQuestion{padding:26px;border:1px solid rgba(212,175,55,.38);border-radius:22px;background:linear-gradient(145deg,rgba(12,40,77,.98),rgba(5,24,50,.98))}
+.haiQuestion h3{font-size:1.25rem;line-height:1.55;color:#fff}
+.haiOption{display:block;width:100%;text-align:left;margin:11px 0;padding:15px 17px;border:1px solid rgba(212,175,55,.3);border-radius:14px;background:rgba(3,19,40,.82);color:#fff;cursor:pointer}
+.haiOption.selected{border-color:#f2d77c;background:rgba(212,175,55,.16)}
+.haiNext,.haiAnalyze{margin-top:18px;padding:14px 20px;border:1px solid #f2d77c;border-radius:14px;background:linear-gradient(135deg,#f2d77c,#d4af37,#9b7415);color:#111;font-weight:850;cursor:pointer}
+.haiScore{font-size:2.2rem;color:#f2d77c;font-weight:900}
+.haiMistake{margin:12px 0;padding:16px;border-left:4px solid #d4af37;background:rgba(4,24,50,.72);border-radius:12px}
+#geminiTestAnalysis{white-space:pre-wrap;margin-top:18px;padding:20px;border:1px solid rgba(212,175,55,.35);border-radius:16px;background:#061a36;color:#f7f9fc}
+@media(max-width:760px){.haiChoiceGrid,.haiCodeGrid,.haiTopicGrid{grid-template-columns:1fr}.haiPortal{padding:0 14px}.haiChoice,.haiCode,.haiTopic{padding:20px}}
+</style>
+
+<section id="portalChoice" class="haiPortal">
+ <div class="haiHero">
+  <h2>HUQUQIY AI — Ta’lim platformasi</h2>
+  <p>Yo‘nalishni tanlang. Sud simulyatori va protsessual testlar bir-biridan mustaqil ishlaydi.</p>
+  <div class="haiChoiceGrid">
+   <button class="haiChoice" onclick="enterCourtPortal()"><b>⚖️ Sud Simulyatori</b><small>60 ta kazus • dinamik AI sud • professional baholash</small></button>
+   <button class="haiChoice" onclick="openTestHub()"><b>📚 Protsessual testlar</b><small>JPK • FPK • IPK • MSIYtK — jami 400 ta test</small></button>
+  </div>
+ </div>
+</section>
+<section id="testHub" class="haiPortal">
+ <div class="haiTop"><button class="haiBack" onclick="showPortalChoice()">← Asosiy tanlov</button><b>400 ta protsessual test</b></div>
+ <div class="haiHero"><h2>📚 Kodeksni tanlang</h2><p>Har bir kodeks: 5 mavzu × 20 test = 100 test.</p><div id="testCodeGrid" class="haiCodeGrid"></div></div>
+</section>
+<section id="testTopics" class="haiPortal">
+ <div class="haiTop"><button class="haiBack" onclick="openTestHub()">← Kodekslar</button><b id="topicCodeTitle"></b></div>
+ <div class="haiHero"><h2>Mavzuni tanlang</h2><div id="testTopicGrid" class="haiTopicGrid"></div></div>
+</section>
+<section id="testRunner" class="haiPortal">
+ <div class="haiTop"><button class="haiBack" onclick="backToTopics()">← Mavzular</button><b id="testMeta"></b></div>
+ <div class="haiProgress"><i id="testProgressBar"></i></div>
+ <div id="testQuestionBox" class="haiQuestion"></div>
+</section>
+<section id="testResult" class="haiPortal">
+ <div class="haiTop"><button class="haiBack" onclick="backToTopics()">← Mavzular</button><b>Natija</b></div>
+ <div class="haiHero">
+  <div id="testScore" class="haiScore"></div>
+  <p id="testResultText"></p>
+  <div id="mistakeList"></div>
+  <button class="haiAnalyze" onclick="analyzeMistakesWithGemini()">✨ Gemini bilan xatolarni tahlil qilish</button>
+  <div id="geminiTestAnalysis" style="display:none"></div>
+ </div>
+</section>
+
+<script id="hai-tests-v11-script">
+const HAI_TEST_BANK={"JPK":{"title":"Jinoyat-protsessual kodeksi","topics":[{"name":"Jinoyat protsessining asosiy prinsiplari","questions":[{"id":"JPK-1-1","q":"Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-2","q":"Jinoyat protsessida qonuniylik nimani talab qiladi?","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-3","q":"Nazariy savol: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-4","q":"Nazariy savol: Jinoyat protsessida qonuniylik nimani talab qiladi? Eng to‘g‘ri javobni belgilang.","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-5","q":"Sud amaliyoti uchun: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Eng to‘g‘ri javobni belgilang.","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-6","q":"Sud amaliyoti uchun: Jinoyat protsessida qonuniylik nimani talab qiladi? Eng to‘g‘ri javobni belgilang.","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-7","q":"Protsessual vaziyat: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Qaysi variant protsessual qoidaga mos?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-8","q":"Protsessual vaziyat: Jinoyat protsessida qonuniylik nimani talab qiladi? Qaysi variant protsessual qoidaga mos?","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-9","q":"Kodeks mazmunidan kelib chiqib: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Qaysi variant protsessual qoidaga mos?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-10","q":"Kodeks mazmunidan kelib chiqib: Jinoyat protsessida qonuniylik nimani talab qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-11","q":"Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-12","q":"Jinoyat protsessida qonuniylik nimani talab qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-13","q":"Nazariy savol: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Talaba qaysi javobni tanlashi kerak?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-14","q":"Nazariy savol: Jinoyat protsessida qonuniylik nimani talab qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-15","q":"Sud amaliyoti uchun: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Talaba qaysi javobni tanlashi kerak?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-16","q":"Sud amaliyoti uchun: Jinoyat protsessida qonuniylik nimani talab qiladi?","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-17","q":"Protsessual vaziyat: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak?","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-18","q":"Protsessual vaziyat: Jinoyat protsessida qonuniylik nimani talab qiladi?","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-19","q":"Kodeks mazmunidan kelib chiqib: Sud hukm chiqarishda qaysi dalillarga asoslanishi kerak? Eng to‘g‘ri javobni belgilang.","options":["Faqat sud majlisida tekshirilgan dalillarga","Faqat tergovchi to‘plagan dalillarga","Faqat ekspert xulosasiga","Faqat jabrlanuvchi ko‘rsatmasiga"],"correct":0,"explanation":"Sud hukmi sud majlisida tekshirilgan dalillarga asoslanadi.","legalBasis":"JPK, dalillarni bevosita tekshirish qoidalari","topic":"Jinoyat protsessining asosiy prinsiplari"},{"id":"JPK-1-20","q":"Kodeks mazmunidan kelib chiqib: Jinoyat protsessida qonuniylik nimani talab qiladi? Eng to‘g‘ri javobni belgilang.","options":["Protsessual qonun talablariga rioya etishni","Faqat prokuror fikriga amal qilishni","Faqat yozma dalilni qabul qilishni","Taraflar kelishuvini hukm deb olishni"],"correct":0,"explanation":"Protsess ishtirokchilari protsessual qonun talablariga rioya etishi kerak.","legalBasis":"JPK, qonuniylik prinsipi","topic":"Jinoyat protsessining asosiy prinsiplari"}]},{"name":"Protsess ishtirokchilari va himoya huquqi","questions":[{"id":"JPK-2-1","q":"Himoya huquqining mazmuniga eng mos javob qaysi?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-2","q":"Iltimosnoma qachon protsessual ahamiyatga ega?","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-3","q":"Nazariy savol: Himoya huquqining mazmuniga eng mos javob qaysi?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-4","q":"Nazariy savol: Iltimosnoma qachon protsessual ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-5","q":"Sud amaliyoti uchun: Himoya huquqining mazmuniga eng mos javob qaysi? Eng to‘g‘ri javobni belgilang.","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-6","q":"Sud amaliyoti uchun: Iltimosnoma qachon protsessual ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-7","q":"Protsessual vaziyat: Himoya huquqining mazmuniga eng mos javob qaysi? Qaysi variant protsessual qoidaga mos?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-8","q":"Protsessual vaziyat: Iltimosnoma qachon protsessual ahamiyatga ega? Qaysi variant protsessual qoidaga mos?","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-9","q":"Kodeks mazmunidan kelib chiqib: Himoya huquqining mazmuniga eng mos javob qaysi? Qaysi variant protsessual qoidaga mos?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-10","q":"Kodeks mazmunidan kelib chiqib: Iltimosnoma qachon protsessual ahamiyatga ega? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-11","q":"Himoya huquqining mazmuniga eng mos javob qaysi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-12","q":"Iltimosnoma qachon protsessual ahamiyatga ega? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-13","q":"Nazariy savol: Himoya huquqining mazmuniga eng mos javob qaysi? Talaba qaysi javobni tanlashi kerak?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-14","q":"Nazariy savol: Iltimosnoma qachon protsessual ahamiyatga ega? Talaba qaysi javobni tanlashi kerak?","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-15","q":"Sud amaliyoti uchun: Himoya huquqining mazmuniga eng mos javob qaysi? Talaba qaysi javobni tanlashi kerak?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-16","q":"Sud amaliyoti uchun: Iltimosnoma qachon protsessual ahamiyatga ega?","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-17","q":"Protsessual vaziyat: Himoya huquqining mazmuniga eng mos javob qaysi?","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-18","q":"Protsessual vaziyat: Iltimosnoma qachon protsessual ahamiyatga ega?","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-19","q":"Kodeks mazmunidan kelib chiqib: Himoya huquqining mazmuniga eng mos javob qaysi? Eng to‘g‘ri javobni belgilang.","options":["Shaxsga o‘zini himoya qilish uchun real protsessual imkoniyat berilishi","Faqat hukmdan keyin advokat berilishi","Faqat yozma tushuntirish olish","Himoyachini sud tanlamasligi"],"correct":0,"explanation":"Himoya huquqi formal emas, amalda ta’minlanishi kerak.","legalBasis":"JPK, himoya huquqi","topic":"Protsess ishtirokchilari va himoya huquqi"},{"id":"JPK-2-20","q":"Kodeks mazmunidan kelib chiqib: Iltimosnoma qachon protsessual ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Vakolatli organga aniq protsessual talab bilan bildirilganda","Faqat hukmdan keyin","Faqat guvoh tomonidan","Faqat og‘zaki bo‘lmasa"],"correct":0,"explanation":"Iltimosnoma protsessual masalani hal etish haqidagi murojaatdir.","legalBasis":"JPK, iltimosnomalar","topic":"Protsess ishtirokchilari va himoya huquqi"}]},{"name":"Dalillar va isbotlash","questions":[{"id":"JPK-3-1","q":"Dalilni baholashda qaysi jihat muhim?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-2","q":"Ekspert xulosasi sud uchun qanday ahamiyatga ega?","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-3","q":"Nazariy savol: Dalilni baholashda qaysi jihat muhim?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-4","q":"Nazariy savol: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-5","q":"Sud amaliyoti uchun: Dalilni baholashda qaysi jihat muhim? Eng to‘g‘ri javobni belgilang.","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-6","q":"Sud amaliyoti uchun: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-7","q":"Protsessual vaziyat: Dalilni baholashda qaysi jihat muhim? Qaysi variant protsessual qoidaga mos?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-8","q":"Protsessual vaziyat: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Qaysi variant protsessual qoidaga mos?","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-9","q":"Kodeks mazmunidan kelib chiqib: Dalilni baholashda qaysi jihat muhim? Qaysi variant protsessual qoidaga mos?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-10","q":"Kodeks mazmunidan kelib chiqib: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-11","q":"Dalilni baholashda qaysi jihat muhim? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-12","q":"Ekspert xulosasi sud uchun qanday ahamiyatga ega? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-13","q":"Nazariy savol: Dalilni baholashda qaysi jihat muhim? Talaba qaysi javobni tanlashi kerak?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-14","q":"Nazariy savol: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Talaba qaysi javobni tanlashi kerak?","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-15","q":"Sud amaliyoti uchun: Dalilni baholashda qaysi jihat muhim? Talaba qaysi javobni tanlashi kerak?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-16","q":"Sud amaliyoti uchun: Ekspert xulosasi sud uchun qanday ahamiyatga ega?","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-17","q":"Protsessual vaziyat: Dalilni baholashda qaysi jihat muhim?","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-18","q":"Protsessual vaziyat: Ekspert xulosasi sud uchun qanday ahamiyatga ega?","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"},{"id":"JPK-3-19","q":"Kodeks mazmunidan kelib chiqib: Dalilni baholashda qaysi jihat muhim? Eng to‘g‘ri javobni belgilang.","options":["Aloqadorlik, maqbullik va ishonchlilik","Faqat hujjatning uzunligi","Faqat uni kim taqdim etgani","Faqat nusxa soni"],"correct":0,"explanation":"Dalil protsessual talablar va ish uchun ahamiyati nuqtai nazaridan baholanadi.","legalBasis":"JPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"JPK-3-20","q":"Kodeks mazmunidan kelib chiqib: Ekspert xulosasi sud uchun qanday ahamiyatga ega? Eng to‘g‘ri javobni belgilang.","options":["Boshqa dalillar bilan birga baholanadi","Har doim majburiy hukm hisoblanadi","Faqat prokuror uchun majburiy","Dalil hisoblanmaydi"],"correct":0,"explanation":"Ekspert xulosasi boshqa dalillar qatorida baholanadi.","legalBasis":"JPK, ekspertiza","topic":"Dalillar va isbotlash"}]},{"name":"Tergov va sud muhokamasi","questions":[{"id":"JPK-4-1","q":"Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-2","q":"Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq?","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-3","q":"Nazariy savol: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-4","q":"Nazariy savol: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-5","q":"Sud amaliyoti uchun: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Eng to‘g‘ri javobni belgilang.","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-6","q":"Sud amaliyoti uchun: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-7","q":"Protsessual vaziyat: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Qaysi variant protsessual qoidaga mos?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-8","q":"Protsessual vaziyat: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Qaysi variant protsessual qoidaga mos?","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-9","q":"Kodeks mazmunidan kelib chiqib: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Qaysi variant protsessual qoidaga mos?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-10","q":"Kodeks mazmunidan kelib chiqib: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-11","q":"Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-12","q":"Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-13","q":"Nazariy savol: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Talaba qaysi javobni tanlashi kerak?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-14","q":"Nazariy savol: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Talaba qaysi javobni tanlashi kerak?","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-15","q":"Sud amaliyoti uchun: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Talaba qaysi javobni tanlashi kerak?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-16","q":"Sud amaliyoti uchun: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq?","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-17","q":"Protsessual vaziyat: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi?","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-18","q":"Protsessual vaziyat: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq?","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-19","q":"Kodeks mazmunidan kelib chiqib: Sud muhokamasida dalillarni bevosita tekshirish nimani anglatadi? Eng to‘g‘ri javobni belgilang.","options":["Sudning dalillarni majlisda tekshirishi","Faqat tergov bayonnomasini qabul qilish","Faqat prokuror nutqini eshitish","Dalillarni tekshirmasdan hukm qilish"],"correct":0,"explanation":"Sud dalillarni bevosita tekshirishi sud muhokamasining muhim kafolatidir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"},{"id":"JPK-4-20","q":"Kodeks mazmunidan kelib chiqib: Sudlanuvchining oxirgi so‘zi qaysi bosqich bilan bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Hukm chiqarishdan oldingi sud muhokamasi yakuni bilan","Ish qo‘zg‘atishdan oldin","Ekspertiza tayinlashdan oldin","Apellyatsiyadan keyin"],"correct":0,"explanation":"Oxirgi so‘z sud muhokamasining yakuniy protsessual kafolatlaridan biridir.","legalBasis":"JPK, sud muhokamasi","topic":"Tergov va sud muhokamasi"}]},{"name":"Shikoyat, protest va yuqori instansiyalar","questions":[{"id":"JPK-5-1","q":"Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-2","q":"Shikoyat berish huquqi nimani ta’minlaydi?","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-3","q":"Nazariy savol: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-4","q":"Nazariy savol: Shikoyat berish huquqi nimani ta’minlaydi? Eng to‘g‘ri javobni belgilang.","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-5","q":"Sud amaliyoti uchun: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-6","q":"Sud amaliyoti uchun: Shikoyat berish huquqi nimani ta’minlaydi? Eng to‘g‘ri javobni belgilang.","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-7","q":"Protsessual vaziyat: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-8","q":"Protsessual vaziyat: Shikoyat berish huquqi nimani ta’minlaydi? Qaysi variant protsessual qoidaga mos?","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-9","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-10","q":"Kodeks mazmunidan kelib chiqib: Shikoyat berish huquqi nimani ta’minlaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-11","q":"Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-12","q":"Shikoyat berish huquqi nimani ta’minlaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-13","q":"Nazariy savol: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-14","q":"Nazariy savol: Shikoyat berish huquqi nimani ta’minlaydi? Talaba qaysi javobni tanlashi kerak?","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-15","q":"Sud amaliyoti uchun: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-16","q":"Sud amaliyoti uchun: Shikoyat berish huquqi nimani ta’minlaydi?","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-17","q":"Protsessual vaziyat: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima?","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-18","q":"Protsessual vaziyat: Shikoyat berish huquqi nimani ta’minlaydi?","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-19","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatini yuqori instansiyada tekshirtirishning maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatining qonuniyligi va asosliligini tekshirtirish","Yangi jinoyat yaratish","Ekspertni avtomatik almashtirish","Sud majlisini bekor qilish"],"correct":0,"explanation":"Yuqori instansiya nazorati sud hujjatini protsessual tartibda tekshirishga xizmat qiladi.","legalBasis":"JPK, sud hujjatlarini qayta ko‘rish","topic":"Shikoyat, protest va yuqori instansiyalar"},{"id":"JPK-5-20","q":"Kodeks mazmunidan kelib chiqib: Shikoyat berish huquqi nimani ta’minlaydi? Eng to‘g‘ri javobni belgilang.","options":["Sud qarorini belgilangan tartibda qayta ko‘rib chiqishni so‘rash imkonini","Hukmni avtomatik bekor qilishni","Har qanday dalilni yashirishni","Sud tarkibini o‘zi tanlashni"],"correct":0,"explanation":"Shikoyat berish huquqi sud himoyasining protsessual kafolatidir.","legalBasis":"JPK, shikoyat qilish","topic":"Shikoyat, protest va yuqori instansiyalar"}]}]},"FPK":{"title":"Fuqarolik protsessual kodeksi","topics":[{"name":"Fuqarolik sud ish yurituvining asoslari","questions":[{"id":"FPK-1-1","q":"Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-2","q":"Taraflarning tengligi nimani anglatadi?","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-3","q":"Nazariy savol: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-4","q":"Nazariy savol: Taraflarning tengligi nimani anglatadi? Eng to‘g‘ri javobni belgilang.","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-5","q":"Sud amaliyoti uchun: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-6","q":"Sud amaliyoti uchun: Taraflarning tengligi nimani anglatadi? Eng to‘g‘ri javobni belgilang.","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-7","q":"Protsessual vaziyat: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Qaysi variant protsessual qoidaga mos?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-8","q":"Protsessual vaziyat: Taraflarning tengligi nimani anglatadi? Qaysi variant protsessual qoidaga mos?","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-9","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Qaysi variant protsessual qoidaga mos?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-10","q":"Kodeks mazmunidan kelib chiqib: Taraflarning tengligi nimani anglatadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-11","q":"Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-12","q":"Taraflarning tengligi nimani anglatadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-13","q":"Nazariy savol: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Talaba qaysi javobni tanlashi kerak?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-14","q":"Nazariy savol: Taraflarning tengligi nimani anglatadi? Talaba qaysi javobni tanlashi kerak?","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-15","q":"Sud amaliyoti uchun: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Talaba qaysi javobni tanlashi kerak?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-16","q":"Sud amaliyoti uchun: Taraflarning tengligi nimani anglatadi?","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-17","q":"Protsessual vaziyat: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-18","q":"Protsessual vaziyat: Taraflarning tengligi nimani anglatadi?","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-19","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik sudiga murojaat qilishning asosiy maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilish","Jinoyat jazosini tayinlash","Litsenziya berish","Soliq tekshiruvini o‘tkazish"],"correct":0,"explanation":"Fuqarolik protsessi fuqarolik-huquqiy va boshqa tegishli nizolarda sud himoyasini ta’minlaydi.","legalBasis":"FPK, sudga murojaat qilish","topic":"Fuqarolik sud ish yurituvining asoslari"},{"id":"FPK-1-20","q":"Kodeks mazmunidan kelib chiqib: Taraflarning tengligi nimani anglatadi? Eng to‘g‘ri javobni belgilang.","options":["Har ikki tarafga o‘z pozitsiyasini himoya qilish uchun protsessual imkoniyat berilishini","Da’vogar har doim ustunligini","Javobgar dalil bermasligini","Sud taraflardan biri bo‘lishini"],"correct":0,"explanation":"Tortishuv va tenglik taraflarning protsessual imkoniyatlarini ta’minlaydi.","legalBasis":"FPK, protsess prinsiplari","topic":"Fuqarolik sud ish yurituvining asoslari"}]},{"name":"Taraflar, vakillik va protsessual huquqlar","questions":[{"id":"FPK-2-1","q":"Vakilning suddagi vakolati nimaga asoslanishi kerak?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-2","q":"Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi?","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-3","q":"Nazariy savol: Vakilning suddagi vakolati nimaga asoslanishi kerak?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-4","q":"Nazariy savol: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-5","q":"Sud amaliyoti uchun: Vakilning suddagi vakolati nimaga asoslanishi kerak? Eng to‘g‘ri javobni belgilang.","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-6","q":"Sud amaliyoti uchun: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-7","q":"Protsessual vaziyat: Vakilning suddagi vakolati nimaga asoslanishi kerak? Qaysi variant protsessual qoidaga mos?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-8","q":"Protsessual vaziyat: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Qaysi variant protsessual qoidaga mos?","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-9","q":"Kodeks mazmunidan kelib chiqib: Vakilning suddagi vakolati nimaga asoslanishi kerak? Qaysi variant protsessual qoidaga mos?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-10","q":"Kodeks mazmunidan kelib chiqib: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-11","q":"Vakilning suddagi vakolati nimaga asoslanishi kerak? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-12","q":"Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-13","q":"Nazariy savol: Vakilning suddagi vakolati nimaga asoslanishi kerak? Talaba qaysi javobni tanlashi kerak?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-14","q":"Nazariy savol: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Talaba qaysi javobni tanlashi kerak?","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-15","q":"Sud amaliyoti uchun: Vakilning suddagi vakolati nimaga asoslanishi kerak? Talaba qaysi javobni tanlashi kerak?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-16","q":"Sud amaliyoti uchun: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi?","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-17","q":"Protsessual vaziyat: Vakilning suddagi vakolati nimaga asoslanishi kerak?","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-18","q":"Protsessual vaziyat: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi?","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-19","q":"Kodeks mazmunidan kelib chiqib: Vakilning suddagi vakolati nimaga asoslanishi kerak? Eng to‘g‘ri javobni belgilang.","options":["Tegishli tarzda rasmiylashtirilgan vakolatga","Og‘zaki tanishlikka","Sudyaning taxminiga","Guvoh roziligiga"],"correct":0,"explanation":"Vakil protsessual harakatlarni o‘z vakolati doirasida amalga oshiradi.","legalBasis":"FPK, sudda vakillik","topic":"Taraflar, vakillik va protsessual huquqlar"},{"id":"FPK-2-20","q":"Kodeks mazmunidan kelib chiqib: Da’vogar da’vo talabiga munosabatini o‘zgartira oladimi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksda belgilangan protsessual doirada","Hech qachon","Faqat javobgar ruxsati bilan","Faqat ekspert orqali"],"correct":0,"explanation":"Da’vogar talabga doir dispozitiv protsessual huquqlarga ega.","legalBasis":"FPK, taraflarning huquqlari","topic":"Taraflar, vakillik va protsessual huquqlar"}]},{"name":"Dalillar va isbotlash","questions":[{"id":"FPK-3-1","q":"Fuqarolik ishida dalil nimaga xizmat qiladi?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-2","q":"Sud dalillarni qanday baholaydi?","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-3","q":"Nazariy savol: Fuqarolik ishida dalil nimaga xizmat qiladi?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-4","q":"Nazariy savol: Sud dalillarni qanday baholaydi? Eng to‘g‘ri javobni belgilang.","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-5","q":"Sud amaliyoti uchun: Fuqarolik ishida dalil nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-6","q":"Sud amaliyoti uchun: Sud dalillarni qanday baholaydi? Eng to‘g‘ri javobni belgilang.","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-7","q":"Protsessual vaziyat: Fuqarolik ishida dalil nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-8","q":"Protsessual vaziyat: Sud dalillarni qanday baholaydi? Qaysi variant protsessual qoidaga mos?","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-9","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik ishida dalil nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-10","q":"Kodeks mazmunidan kelib chiqib: Sud dalillarni qanday baholaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-11","q":"Fuqarolik ishida dalil nimaga xizmat qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-12","q":"Sud dalillarni qanday baholaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-13","q":"Nazariy savol: Fuqarolik ishida dalil nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-14","q":"Nazariy savol: Sud dalillarni qanday baholaydi? Talaba qaysi javobni tanlashi kerak?","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-15","q":"Sud amaliyoti uchun: Fuqarolik ishida dalil nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-16","q":"Sud amaliyoti uchun: Sud dalillarni qanday baholaydi?","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-17","q":"Protsessual vaziyat: Fuqarolik ishida dalil nimaga xizmat qiladi?","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-18","q":"Protsessual vaziyat: Sud dalillarni qanday baholaydi?","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"},{"id":"FPK-3-19","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik ishida dalil nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Ish uchun ahamiyatli holatlarni aniqlashga","Sud binosini tanlashga","Davlat organini tuzishga","Jinoiy jazo tayinlashga"],"correct":0,"explanation":"Dalillar ish uchun ahamiyatli faktlarni aniqlash vositasidir.","legalBasis":"FPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"FPK-3-20","q":"Kodeks mazmunidan kelib chiqib: Sud dalillarni qanday baholaydi? Eng to‘g‘ri javobni belgilang.","options":["Ularni har tomonlama va o‘zaro bog‘liq holda tekshirib","Faqat da’vogar aytgani bo‘yicha","Faqat bitta hujjat bo‘yicha","Avtomatik ravishda"],"correct":0,"explanation":"Dalillar majmui ish holatlari bilan bog‘liq ravishda baholanadi.","legalBasis":"FPK, dalillarni baholash","topic":"Dalillar va isbotlash"}]},{"name":"Da’vo va birinchi instansiya","questions":[{"id":"FPK-4-1","q":"Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-2","q":"Sud majlisida taraflarning tushuntirishlari nima uchun kerak?","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-3","q":"Nazariy savol: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-4","q":"Nazariy savol: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Eng to‘g‘ri javobni belgilang.","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-5","q":"Sud amaliyoti uchun: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Eng to‘g‘ri javobni belgilang.","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-6","q":"Sud amaliyoti uchun: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Eng to‘g‘ri javobni belgilang.","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-7","q":"Protsessual vaziyat: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Qaysi variant protsessual qoidaga mos?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-8","q":"Protsessual vaziyat: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Qaysi variant protsessual qoidaga mos?","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-9","q":"Kodeks mazmunidan kelib chiqib: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Qaysi variant protsessual qoidaga mos?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-10","q":"Kodeks mazmunidan kelib chiqib: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-11","q":"Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-12","q":"Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-13","q":"Nazariy savol: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Talaba qaysi javobni tanlashi kerak?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-14","q":"Nazariy savol: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Talaba qaysi javobni tanlashi kerak?","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-15","q":"Sud amaliyoti uchun: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Talaba qaysi javobni tanlashi kerak?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-16","q":"Sud amaliyoti uchun: Sud majlisida taraflarning tushuntirishlari nima uchun kerak?","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-17","q":"Protsessual vaziyat: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim?","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-18","q":"Protsessual vaziyat: Sud majlisida taraflarning tushuntirishlari nima uchun kerak?","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-19","q":"Kodeks mazmunidan kelib chiqib: Da’vo arizasida nimaning aniq bo‘lishi ayniqsa muhim? Eng to‘g‘ri javobni belgilang.","options":["Talab va uning faktik asoslari","Sudyaning shaxsiy fikri","Guvohning kelajakdagi javobi","Hukm matni"],"correct":0,"explanation":"Sud da’voning predmeti va asoslarini tushuna olishi kerak.","legalBasis":"FPK, da’vo arizasi","topic":"Da’vo va birinchi instansiya"},{"id":"FPK-4-20","q":"Kodeks mazmunidan kelib chiqib: Sud majlisida taraflarning tushuntirishlari nima uchun kerak? Eng to‘g‘ri javobni belgilang.","options":["Ularning pozitsiyasi va ish holatlarini aniqlash uchun","Ekspertizani bekor qilish uchun","Sud xarajatini yashirish uchun","Sud tarkibini o‘zgartirish uchun"],"correct":0,"explanation":"Taraflarning tushuntirishlari protsessda pozitsiyalarni aniqlashtiradi.","legalBasis":"FPK, sud muhokamasi","topic":"Da’vo va birinchi instansiya"}]},{"name":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar","questions":[{"id":"FPK-5-1","q":"Apellyatsiya shikoyatining vazifasi nima?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-2","q":"Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi?","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-3","q":"Nazariy savol: Apellyatsiya shikoyatining vazifasi nima?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-4","q":"Nazariy savol: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Eng to‘g‘ri javobni belgilang.","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-5","q":"Sud amaliyoti uchun: Apellyatsiya shikoyatining vazifasi nima? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-6","q":"Sud amaliyoti uchun: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Eng to‘g‘ri javobni belgilang.","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-7","q":"Protsessual vaziyat: Apellyatsiya shikoyatining vazifasi nima? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-8","q":"Protsessual vaziyat: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Qaysi variant protsessual qoidaga mos?","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-9","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya shikoyatining vazifasi nima? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-10","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-11","q":"Apellyatsiya shikoyatining vazifasi nima? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-12","q":"Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-13","q":"Nazariy savol: Apellyatsiya shikoyatining vazifasi nima? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-14","q":"Nazariy savol: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-15","q":"Sud amaliyoti uchun: Apellyatsiya shikoyatining vazifasi nima? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-16","q":"Sud amaliyoti uchun: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi?","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-17","q":"Protsessual vaziyat: Apellyatsiya shikoyatining vazifasi nima?","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-18","q":"Protsessual vaziyat: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi?","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-19","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya shikoyatining vazifasi nima? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatini yuqori instansiyada tekshirtirish","Yangi da’vogarning avtomatik qo‘shilishi","Dalillarni yo‘q qilish","Sud qarorini ijrosiz qoldirish"],"correct":0,"explanation":"Apellyatsiya sud hujjatini belgilangan doirada qayta tekshirish mexanizmidir.","legalBasis":"FPK, apellyatsiya","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"},{"id":"FPK-5-20","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatining qonuniy kuchi nimaga ta’sir qiladi? Eng to‘g‘ri javobni belgilang.","options":["Uning majburiyligi va keyingi protsessual oqibatlariga","Guvoh yoshiga","Sud binosi manziliga","Advokat litsenziyasiga"],"correct":0,"explanation":"Qonuniy kuch sud hujjatining protsessual maqomini belgilaydi.","legalBasis":"FPK, sud hujjatlari","topic":"Apellyatsiya, kassatsiya va ijro bilan bog‘liq masalalar"}]}]},"IPK":{"title":"Iqtisodiy protsessual kodeksi","topics":[{"name":"Iqtisodiy sud ish yurituvining asoslari","questions":[{"id":"IPK-1-1","q":"Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-2","q":"Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi?","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-3","q":"Nazariy savol: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-4","q":"Nazariy savol: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-5","q":"Sud amaliyoti uchun: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-6","q":"Sud amaliyoti uchun: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-7","q":"Protsessual vaziyat: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-8","q":"Protsessual vaziyat: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Qaysi variant protsessual qoidaga mos?","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-9","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-10","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-11","q":"Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-12","q":"Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-13","q":"Nazariy savol: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-14","q":"Nazariy savol: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Talaba qaysi javobni tanlashi kerak?","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-15","q":"Sud amaliyoti uchun: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-16","q":"Sud amaliyoti uchun: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi?","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-17","q":"Protsessual vaziyat: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi?","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-18","q":"Protsessual vaziyat: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi?","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-19","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy sudga murojaat qilish nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Iqtisodiyot sohasidagi buzilgan yoki nizolashilayotgan huquq va manfaatlarni himoya qilishga","Jinoiy jazo tayinlashga","Nikohni qayd etishga","Pasport berishga"],"correct":0,"explanation":"Iqtisodiy sud ish yurituvi iqtisodiyot sohasidagi sud himoyasini ta’minlaydi.","legalBasis":"IPK, asosiy qoidalar","topic":"Iqtisodiy sud ish yurituvining asoslari"},{"id":"IPK-1-20","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy sudga murojaat qilish huquqidan oldindan voz kechish qanday baholanadi? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim majburiy","Faqat notarius tasdiqlasa haqiqiy","Sud qaroriga teng"],"correct":0,"explanation":"Sudga murojaat qilish huquqi protsessual kafolatdir.","legalBasis":"IPK, sudga murojaat qilish","topic":"Iqtisodiy sud ish yurituvining asoslari"}]},{"name":"Ishtirokchilar, vakillik va sud tarkibi","questions":[{"id":"IPK-2-1","q":"Yuridik shaxs sudda qanday qatnashishi mumkin?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-2","q":"Sud tarkibiga oid talablar nimani himoya qiladi?","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-3","q":"Nazariy savol: Yuridik shaxs sudda qanday qatnashishi mumkin?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-4","q":"Nazariy savol: Sud tarkibiga oid talablar nimani himoya qiladi? Eng to‘g‘ri javobni belgilang.","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-5","q":"Sud amaliyoti uchun: Yuridik shaxs sudda qanday qatnashishi mumkin? Eng to‘g‘ri javobni belgilang.","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-6","q":"Sud amaliyoti uchun: Sud tarkibiga oid talablar nimani himoya qiladi? Eng to‘g‘ri javobni belgilang.","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-7","q":"Protsessual vaziyat: Yuridik shaxs sudda qanday qatnashishi mumkin? Qaysi variant protsessual qoidaga mos?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-8","q":"Protsessual vaziyat: Sud tarkibiga oid talablar nimani himoya qiladi? Qaysi variant protsessual qoidaga mos?","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-9","q":"Kodeks mazmunidan kelib chiqib: Yuridik shaxs sudda qanday qatnashishi mumkin? Qaysi variant protsessual qoidaga mos?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-10","q":"Kodeks mazmunidan kelib chiqib: Sud tarkibiga oid talablar nimani himoya qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-11","q":"Yuridik shaxs sudda qanday qatnashishi mumkin? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-12","q":"Sud tarkibiga oid talablar nimani himoya qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-13","q":"Nazariy savol: Yuridik shaxs sudda qanday qatnashishi mumkin? Talaba qaysi javobni tanlashi kerak?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-14","q":"Nazariy savol: Sud tarkibiga oid talablar nimani himoya qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-15","q":"Sud amaliyoti uchun: Yuridik shaxs sudda qanday qatnashishi mumkin? Talaba qaysi javobni tanlashi kerak?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-16","q":"Sud amaliyoti uchun: Sud tarkibiga oid talablar nimani himoya qiladi?","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-17","q":"Protsessual vaziyat: Yuridik shaxs sudda qanday qatnashishi mumkin?","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-18","q":"Protsessual vaziyat: Sud tarkibiga oid talablar nimani himoya qiladi?","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-19","q":"Kodeks mazmunidan kelib chiqib: Yuridik shaxs sudda qanday qatnashishi mumkin? Eng to‘g‘ri javobni belgilang.","options":["Vakolatli organi yoki vakili orqali","Faqat guvoh orqali","Faqat ekspert orqali","Faqat bank orqali"],"correct":0,"explanation":"Yuridik shaxs protsessda qonuniy vakolatga ega shaxslar orqali qatnashadi.","legalBasis":"IPK, vakillik","topic":"Ishtirokchilar, vakillik va sud tarkibi"},{"id":"IPK-2-20","q":"Kodeks mazmunidan kelib chiqib: Sud tarkibiga oid talablar nimani himoya qiladi? Eng to‘g‘ri javobni belgilang.","options":["Xolis va qonuniy sudlovni","Tarafning tijorat reklamasini","Shartnoma narxini","Bank foizini"],"correct":0,"explanation":"Sud tarkibiga oid qoidalar odil sudlov kafolatlaridan biridir.","legalBasis":"IPK, sud tarkibi","topic":"Ishtirokchilar, vakillik va sud tarkibi"}]},{"name":"Dalillar va isbotlash","questions":[{"id":"IPK-3-1","q":"Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-2","q":"Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq?","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-3","q":"Nazariy savol: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-4","q":"Nazariy savol: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-5","q":"Sud amaliyoti uchun: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Eng to‘g‘ri javobni belgilang.","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-6","q":"Sud amaliyoti uchun: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-7","q":"Protsessual vaziyat: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Qaysi variant protsessual qoidaga mos?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-8","q":"Protsessual vaziyat: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Qaysi variant protsessual qoidaga mos?","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-9","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Qaysi variant protsessual qoidaga mos?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-10","q":"Kodeks mazmunidan kelib chiqib: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-11","q":"Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-12","q":"Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-13","q":"Nazariy savol: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Talaba qaysi javobni tanlashi kerak?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-14","q":"Nazariy savol: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Talaba qaysi javobni tanlashi kerak?","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-15","q":"Sud amaliyoti uchun: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Talaba qaysi javobni tanlashi kerak?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-16","q":"Sud amaliyoti uchun: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq?","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-17","q":"Protsessual vaziyat: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin?","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-18","q":"Protsessual vaziyat: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq?","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-19","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy ishda shartnoma va hisob hujjatlari nimaga xizmat qilishi mumkin? Eng to‘g‘ri javobni belgilang.","options":["Nizo holatlarini isbotlashga","Jinoiy jazo tayinlashga","Sudyaning vakolatini berishga","Guvohni avtomatik chiqarishga"],"correct":0,"explanation":"Tijorat hujjatlari ish holatlariga aloqador bo‘lsa daliliy ahamiyatga ega bo‘lishi mumkin.","legalBasis":"IPK, dalillar","topic":"Dalillar va isbotlash"},{"id":"IPK-3-20","q":"Kodeks mazmunidan kelib chiqib: Elektron hujjatlarning protsessdagi ahamiyati nimaga bog‘liq? Eng to‘g‘ri javobni belgilang.","options":["Qonuniy talablar va ishga aloqadorligiga","Faqat fayl rangiga","Faqat printerga","Faqat taraf soniga"],"correct":0,"explanation":"Elektron shakldagi materiallar ham protsessual talablar asosida baholanadi.","legalBasis":"IPK, elektron hujjatlar va dalillar","topic":"Dalillar va isbotlash"}]},{"name":"Da’vo, buyruq va birinchi instansiya","questions":[{"id":"IPK-4-1","q":"Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-2","q":"Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima?","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-3","q":"Nazariy savol: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-4","q":"Nazariy savol: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-5","q":"Sud amaliyoti uchun: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Eng to‘g‘ri javobni belgilang.","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-6","q":"Sud amaliyoti uchun: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-7","q":"Protsessual vaziyat: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Qaysi variant protsessual qoidaga mos?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-8","q":"Protsessual vaziyat: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Qaysi variant protsessual qoidaga mos?","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-9","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Qaysi variant protsessual qoidaga mos?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-10","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-11","q":"Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-12","q":"Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-13","q":"Nazariy savol: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Talaba qaysi javobni tanlashi kerak?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-14","q":"Nazariy savol: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Talaba qaysi javobni tanlashi kerak?","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-15","q":"Sud amaliyoti uchun: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Talaba qaysi javobni tanlashi kerak?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-16","q":"Sud amaliyoti uchun: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima?","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-17","q":"Protsessual vaziyat: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi?","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-18","q":"Protsessual vaziyat: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima?","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-19","q":"Kodeks mazmunidan kelib chiqib: Fuqarolik-huquqiy iqtisodiy nizo bo‘yicha sudga murojaat odatda qaysi shaklda bo‘ladi? Eng to‘g‘ri javobni belgilang.","options":["Da’vo arizasi","Jinoyat bayonnomasi","Ekspert buyrug‘i","Ma’muriy jarima"],"correct":0,"explanation":"Iqtisodiy protsessda fuqarolik-huquqiy nizolar bo‘yicha murojaat da’vo shaklida amalga oshiriladi.","legalBasis":"IPK, sudga murojaat shakllari","topic":"Da’vo, buyruq va birinchi instansiya"},{"id":"IPK-4-20","q":"Kodeks mazmunidan kelib chiqib: Iqtisodiy ishni sud muhokamasiga tayyorlashning maqsadi nima? Eng to‘g‘ri javobni belgilang.","options":["Ishni to‘g‘ri va samarali ko‘rishga tayyorlash","Hukmni oldindan yozish","Taraflardan birini chiqarish","Dalillarni yashirish"],"correct":0,"explanation":"Tayyorlov bosqichi ishni mazmunan ko‘rish uchun protsessual sharoit yaratadi.","legalBasis":"IPK, ishni ko‘rishga tayyorlash","topic":"Da’vo, buyruq va birinchi instansiya"}]},{"name":"Yuqori instansiyalar va sud hujjatlari","questions":[{"id":"IPK-5-1","q":"Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-2","q":"Sud hujjatlari bajarilishi nega muhim?","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-3","q":"Nazariy savol: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-4","q":"Nazariy savol: Sud hujjatlari bajarilishi nega muhim? Eng to‘g‘ri javobni belgilang.","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-5","q":"Sud amaliyoti uchun: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-6","q":"Sud amaliyoti uchun: Sud hujjatlari bajarilishi nega muhim? Eng to‘g‘ri javobni belgilang.","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-7","q":"Protsessual vaziyat: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-8","q":"Protsessual vaziyat: Sud hujjatlari bajarilishi nega muhim? Qaysi variant protsessual qoidaga mos?","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-9","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-10","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatlari bajarilishi nega muhim? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-11","q":"Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-12","q":"Sud hujjatlari bajarilishi nega muhim? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-13","q":"Nazariy savol: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-14","q":"Nazariy savol: Sud hujjatlari bajarilishi nega muhim? Talaba qaysi javobni tanlashi kerak?","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-15","q":"Sud amaliyoti uchun: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-16","q":"Sud amaliyoti uchun: Sud hujjatlari bajarilishi nega muhim?","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-17","q":"Protsessual vaziyat: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi?","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-18","q":"Protsessual vaziyat: Sud hujjatlari bajarilishi nega muhim?","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-19","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya iqtisodiy protsessda nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatini yuqori instansiyada tekshirtirishga","Yangi kompaniya ochishga","Shartnomani avtomatik bekor qilishga","Ekspert tayinlashni taqiqlashga"],"correct":0,"explanation":"Apellyatsiya sud hujjatini protsessual tekshirish vositasidir.","legalBasis":"IPK, apellyatsiya","topic":"Yuqori instansiyalar va sud hujjatlari"},{"id":"IPK-5-20","q":"Kodeks mazmunidan kelib chiqib: Sud hujjatlari bajarilishi nega muhim? Eng to‘g‘ri javobni belgilang.","options":["Sud himoyasining amaliy natijasini ta’minlagani uchun","Faqat statistika uchun","Faqat sud binosi uchun","Faqat vakil uchun"],"correct":0,"explanation":"Sud himoyasi sud hujjatining real huquqiy oqibatlari bilan bog‘liq.","legalBasis":"IPK, sud hujjatlari","topic":"Yuqori instansiyalar va sud hujjatlari"}]}]},"MSIYtK":{"title":"Ma’muriy sud ishlarini yuritish to‘g‘risidagi kodeks","topics":[{"name":"Ma’muriy sud ish yurituvining asoslari","questions":[{"id":"MSIYtK-1-1","q":"Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-2","q":"MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi?","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-3","q":"Nazariy savol: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-4","q":"Nazariy savol: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Eng to‘g‘ri javobni belgilang.","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-5","q":"Sud amaliyoti uchun: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Eng to‘g‘ri javobni belgilang.","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-6","q":"Sud amaliyoti uchun: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Eng to‘g‘ri javobni belgilang.","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-7","q":"Protsessual vaziyat: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Qaysi variant protsessual qoidaga mos?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-8","q":"Protsessual vaziyat: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Qaysi variant protsessual qoidaga mos?","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-9","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Qaysi variant protsessual qoidaga mos?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-10","q":"Kodeks mazmunidan kelib chiqib: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-11","q":"Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-12","q":"MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-13","q":"Nazariy savol: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Talaba qaysi javobni tanlashi kerak?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-14","q":"Nazariy savol: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Talaba qaysi javobni tanlashi kerak?","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-15","q":"Sud amaliyoti uchun: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Talaba qaysi javobni tanlashi kerak?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-16","q":"Sud amaliyoti uchun: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi?","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-17","q":"Protsessual vaziyat: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi?","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-18","q":"Protsessual vaziyat: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi?","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-19","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy sud ish yurituvining asosiy vazifalaridan biri qaysi? Eng to‘g‘ri javobni belgilang.","options":["Ma’muriy organlar bilan munosabatlarda huquq va qonuniy manfaatlarni himoya qilish","Jinoyat jazosini tayinlash","Nikohni qayd etish","Tijorat korxonasini boshqarish"],"correct":0,"explanation":"Ma’muriy sudlov ommaviy-huquqiy munosabatlarda sud himoyasini ta’minlaydi.","legalBasis":"MSIYtK, asosiy qoidalar","topic":"Ma’muriy sud ish yurituvining asoslari"},{"id":"MSIYtK-1-20","q":"Kodeks mazmunidan kelib chiqib: MSIYtK ma’muriy huquqbuzarlik to‘g‘risidagi ishlarni yuritishga tatbiq etiladimi? Eng to‘g‘ri javobni belgilang.","options":["Yo‘q","Ha, barcha holatda","Faqat prokuror xohlasa","Faqat yuridik shaxslarga"],"correct":0,"explanation":"Kodeks ma’muriy va boshqa ommaviy-huquqiy nizolarni ko‘rishga oid; ma’muriy huquqbuzarlik ishlariga tatbiq etilmaydi.","legalBasis":"MSIYtK, amal qilish sohasi","topic":"Ma’muriy sud ish yurituvining asoslari"}]},{"name":"Sud tarkibi va ishtirokchilar","questions":[{"id":"MSIYtK-2-1","q":"Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-2","q":"Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-3","q":"Nazariy savol: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-4","q":"Nazariy savol: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Eng to‘g‘ri javobni belgilang.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-5","q":"Sud amaliyoti uchun: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-6","q":"Sud amaliyoti uchun: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Eng to‘g‘ri javobni belgilang.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-7","q":"Protsessual vaziyat: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Qaysi variant protsessual qoidaga mos?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-8","q":"Protsessual vaziyat: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Qaysi variant protsessual qoidaga mos?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-9","q":"Kodeks mazmunidan kelib chiqib: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Qaysi variant protsessual qoidaga mos?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-10","q":"Kodeks mazmunidan kelib chiqib: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-11","q":"Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-12","q":"Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-13","q":"Nazariy savol: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Talaba qaysi javobni tanlashi kerak?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-14","q":"Nazariy savol: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Talaba qaysi javobni tanlashi kerak?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-15","q":"Sud amaliyoti uchun: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Talaba qaysi javobni tanlashi kerak?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-16","q":"Sud amaliyoti uchun: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-17","q":"Protsessual vaziyat: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi?","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-18","q":"Protsessual vaziyat: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi?","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-19","q":"Kodeks mazmunidan kelib chiqib: Birinchi instansiyada ma’muriy ishlar odatda qanday ko‘riladi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksda belgilangan sud tarkibida","Har doim hakamlik sudi tomonidan","Faqat prokuror tomonidan","Notarius tomonidan"],"correct":0,"explanation":"Sud tarkibi kodeks bilan belgilanadi va instansiyaga qarab farq qilishi mumkin.","legalBasis":"MSIYtK, sud tarkibi","topic":"Sud tarkibi va ishtirokchilar"},{"id":"MSIYtK-2-20","q":"Kodeks mazmunidan kelib chiqib: Manfaatdor shaxsning sudga murojaati nimani ko‘zlaydi? Eng to‘g‘ri javobni belgilang.","options":["Buzilgan yoki nizolashilayotgan huquq va manfaatni himoya qilishni","Jinoiy hukm chiqarishni","Soliq stavkasini belgilashni","Qonun qabul qilishni"],"correct":0,"explanation":"Sudga murojaat qilish huquqi ma’muriy sud himoyasining asosiy kafolatidir.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Sud tarkibi va ishtirokchilar"}]},{"name":"Dalillar va ma’muriy ish materiallari","questions":[{"id":"MSIYtK-3-1","q":"Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-2","q":"Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi?","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-3","q":"Nazariy savol: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-4","q":"Nazariy savol: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Eng to‘g‘ri javobni belgilang.","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-5","q":"Sud amaliyoti uchun: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Eng to‘g‘ri javobni belgilang.","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-6","q":"Sud amaliyoti uchun: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Eng to‘g‘ri javobni belgilang.","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-7","q":"Protsessual vaziyat: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Qaysi variant protsessual qoidaga mos?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-8","q":"Protsessual vaziyat: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Qaysi variant protsessual qoidaga mos?","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-9","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Qaysi variant protsessual qoidaga mos?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-10","q":"Kodeks mazmunidan kelib chiqib: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-11","q":"Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-12","q":"Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-13","q":"Nazariy savol: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Talaba qaysi javobni tanlashi kerak?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-14","q":"Nazariy savol: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Talaba qaysi javobni tanlashi kerak?","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-15","q":"Sud amaliyoti uchun: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Talaba qaysi javobni tanlashi kerak?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-16","q":"Sud amaliyoti uchun: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi?","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-17","q":"Protsessual vaziyat: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi?","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-18","q":"Protsessual vaziyat: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi?","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-19","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy ish elektron shaklda shakllantirilishi mumkinmi? Eng to‘g‘ri javobni belgilang.","options":["Ha","Yo‘q","Faqat jinoyat ishida","Faqat notariusda"],"correct":0,"explanation":"Kodeks ma’muriy ishni elektron shaklda shakllantirish imkonini nazarda tutadi.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"},{"id":"MSIYtK-3-20","q":"Kodeks mazmunidan kelib chiqib: Sud talab qilib olgan hujjatlar ish materialiga kirishi mumkinmi? Eng to‘g‘ri javobni belgilang.","options":["Ha","Yo‘q","Faqat taraf roziligi bilan","Faqat ekspert tasdiqlasa"],"correct":0,"explanation":"Sud tomonidan talab qilib olingan hujjatlar ma’muriy ish materiallarini shakllantirishi mumkin.","legalBasis":"MSIYtK, ma’muriy ish","topic":"Dalillar va ma’muriy ish materiallari"}]},{"name":"Birinchi instansiya va ommaviy-huquqiy nizolar","questions":[{"id":"MSIYtK-4-1","q":"Davlat organi qarorini nizolashda sud nimani tekshiradi?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-2","q":"Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday?","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-3","q":"Nazariy savol: Davlat organi qarorini nizolashda sud nimani tekshiradi?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-4","q":"Nazariy savol: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-5","q":"Sud amaliyoti uchun: Davlat organi qarorini nizolashda sud nimani tekshiradi? Eng to‘g‘ri javobni belgilang.","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-6","q":"Sud amaliyoti uchun: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-7","q":"Protsessual vaziyat: Davlat organi qarorini nizolashda sud nimani tekshiradi? Qaysi variant protsessual qoidaga mos?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-8","q":"Protsessual vaziyat: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Qaysi variant protsessual qoidaga mos?","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-9","q":"Kodeks mazmunidan kelib chiqib: Davlat organi qarorini nizolashda sud nimani tekshiradi? Qaysi variant protsessual qoidaga mos?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-10","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-11","q":"Davlat organi qarorini nizolashda sud nimani tekshiradi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-12","q":"Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-13","q":"Nazariy savol: Davlat organi qarorini nizolashda sud nimani tekshiradi? Talaba qaysi javobni tanlashi kerak?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-14","q":"Nazariy savol: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Talaba qaysi javobni tanlashi kerak?","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-15","q":"Sud amaliyoti uchun: Davlat organi qarorini nizolashda sud nimani tekshiradi? Talaba qaysi javobni tanlashi kerak?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-16","q":"Sud amaliyoti uchun: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday?","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-17","q":"Protsessual vaziyat: Davlat organi qarorini nizolashda sud nimani tekshiradi?","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-18","q":"Protsessual vaziyat: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday?","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-19","q":"Kodeks mazmunidan kelib chiqib: Davlat organi qarorini nizolashda sud nimani tekshiradi? Eng to‘g‘ri javobni belgilang.","options":["Nizolashilayotgan ma’muriy hujjat yoki harakatning qonuniyligi bilan bog‘liq holatlarni","Jinoyat tarkibini avtomatik","Nikoh shartlarini","Korporativ dividendni"],"correct":0,"explanation":"Ma’muriy sud ommaviy-huquqiy nizoda ma’muriy organ faoliyatining qonuniyligini sud tartibida tekshiradi.","legalBasis":"MSIYtK, alohida toifadagi ma’muriy ishlar","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"},{"id":"MSIYtK-4-20","q":"Kodeks mazmunidan kelib chiqib: Ma’muriy sudga murojaat qilish huquqidan voz kechish qanday? Eng to‘g‘ri javobni belgilang.","options":["Haqiqiy emas","Har doim haqiqiy","Faqat yozma bo‘lsa haqiqiy","Faqat davlat organi uchun haqiqiy"],"correct":0,"explanation":"Sudga murojaat qilish huquqi qonun bilan kafolatlanadi.","legalBasis":"MSIYtK, sudga murojaat qilish","topic":"Birinchi instansiya va ommaviy-huquqiy nizolar"}]},{"name":"Apellyatsiya, kassatsiya va taftish","questions":[{"id":"MSIYtK-5-1","q":"Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-2","q":"Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi?","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-3","q":"Nazariy savol: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-4","q":"Nazariy savol: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-5","q":"Sud amaliyoti uchun: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-6","q":"Sud amaliyoti uchun: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-7","q":"Protsessual vaziyat: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-8","q":"Protsessual vaziyat: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Qaysi variant protsessual qoidaga mos?","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-9","q":"Kodeks mazmunidan kelib chiqib: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Qaysi variant protsessual qoidaga mos?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-10","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-11","q":"Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-12","q":"Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Huquqiy jihatdan to‘g‘ri variantni toping.","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-13","q":"Nazariy savol: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-14","q":"Nazariy savol: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Talaba qaysi javobni tanlashi kerak?","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-15","q":"Sud amaliyoti uchun: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Talaba qaysi javobni tanlashi kerak?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-16","q":"Sud amaliyoti uchun: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi?","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-17","q":"Protsessual vaziyat: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi?","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-18","q":"Protsessual vaziyat: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi?","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-19","q":"Kodeks mazmunidan kelib chiqib: Yuqori instansiyada ma’muriy sud hujjatini tekshirtirish nimaga xizmat qiladi? Eng to‘g‘ri javobni belgilang.","options":["Sud hujjatining qonuniyligi va asosliligini protsessual tekshirishga","Davlat organini tugatishga","Yangi jinoyat ishini ochishga","Soliqni avtomatik bekor qilishga"],"correct":0,"explanation":"Yuqori instansiya mexanizmlari sud hujjatlarini protsessual qayta tekshirishga xizmat qiladi.","legalBasis":"MSIYtK, sud hujjatlarini qayta ko‘rish","topic":"Apellyatsiya, kassatsiya va taftish"},{"id":"MSIYtK-5-20","q":"Kodeks mazmunidan kelib chiqib: Apellyatsiya, kassatsiya va taftish bosqichlarida sud tarkibi qanday belgilanadi? Eng to‘g‘ri javobni belgilang.","options":["Kodeksdagi instansiya qoidalariga muvofiq","Talaba xohishiga ko‘ra","Da’vogar tomonidan","Ekspert tomonidan"],"correct":0,"explanation":"Har bir instansiyaning sud tarkibi kodeksda belgilanadi.","legalBasis":"MSIYtK, sud tarkibi va yuqori instansiyalar","topic":"Apellyatsiya, kassatsiya va taftish"}]}]}};
+let HAI_TEST={code:null,topic:0,index:0,answers:[],selected:null};
+
+function hideTestScreens(){["portalChoice","testHub","testTopics","testRunner","testResult"].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display="none"})}
+function originalMain(){return document.getElementById("home")}
+function showPortalChoice(){
+ hideTestScreens(); const h=originalMain(); if(h)h.style.display="none";
+ document.getElementById("portalChoice").style.display="block";
+}
+function enterCourtPortal(){
+ hideTestScreens(); const h=originalMain(); if(h)h.style.display="";
+ if(typeof showScreen==="function"){try{showScreen("home")}catch(e){}}
+}
+function openTestHub(){
+ hideTestScreens(); const h=originalMain(); if(h)h.style.display="none";
+ document.getElementById("testHub").style.display="block";
+ const g=document.getElementById("testCodeGrid");g.innerHTML="";
+ Object.entries(HAI_TEST_BANK).forEach(([code,d])=>{
+  const done=Number(localStorage.getItem("hai_done_"+code)||0);
+  g.insertAdjacentHTML("beforeend",`<button class="haiCode" onclick="openTestTopics('${code}')"><b>${code}</b><span>${d.title}</span><small>5 mavzu • 100 test • progress ${Math.min(done,100)}/100</small></button>`);
+ });
+}
+function openTestTopics(code){
+ HAI_TEST.code=code; hideTestScreens();document.getElementById("testTopics").style.display="block";
+ const d=HAI_TEST_BANK[code];document.getElementById("topicCodeTitle").textContent=code+" — "+d.title;
+ const g=document.getElementById("testTopicGrid");g.innerHTML="";
+ d.topics.forEach((t,i)=>{
+  const key=`hai_score_${code}_${i}`,score=localStorage.getItem(key);
+  g.insertAdjacentHTML("beforeend",`<button class="haiTopic" onclick="startTopic(${i})"><b>${i+1}-mavzu</b><span>${t.name}</span><small>20 ta test${score!==null?" • oxirgi natija "+score+"/20":""}</small></button>`);
+ });
+}
+function backToTopics(){if(HAI_TEST.code)openTestTopics(HAI_TEST.code);else openTestHub()}
+function startTopic(i){
+ HAI_TEST.topic=i;HAI_TEST.index=0;HAI_TEST.answers=[];HAI_TEST.selected=null;
+ hideTestScreens();document.getElementById("testRunner").style.display="block";renderQuestion();
+}
+function renderQuestion(){
+ const t=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic],q=t.questions[HAI_TEST.index];
+ document.getElementById("testMeta").textContent=`${HAI_TEST.code} • ${HAI_TEST.topic+1}-mavzu • ${HAI_TEST.index+1}/20`;
+ document.getElementById("testProgressBar").style.width=((HAI_TEST.index)/20*100)+"%";
+ const box=document.getElementById("testQuestionBox");
+ box.innerHTML=`<small>${t.name}</small><h3>${HAI_TEST.index+1}. ${q.q}</h3><div id="opts"></div><button id="testNext" class="haiNext" disabled onclick="nextTestQuestion()">${HAI_TEST.index===19?"Natijani ko‘rish":"Keyingi savol →"}</button>`;
+ const o=document.getElementById("opts");
+ q.options.forEach((x,j)=>o.insertAdjacentHTML("beforeend",`<button class="haiOption" onclick="selectTestOption(${j},this)"><b>${"ABCD"[j]}.</b> ${x}</button>`));
+}
+function selectTestOption(j,el){
+ HAI_TEST.selected=j;document.querySelectorAll(".haiOption").forEach(x=>x.classList.remove("selected"));el.classList.add("selected");document.getElementById("testNext").disabled=false;
+}
+function nextTestQuestion(){
+ const q=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic].questions[HAI_TEST.index];
+ HAI_TEST.answers.push({id:q.id,selected:HAI_TEST.selected,correct:q.correct});
+ if(HAI_TEST.index<19){HAI_TEST.index++;HAI_TEST.selected=null;renderQuestion()}else finishTest();
+}
+function finishTest(){
+ hideTestScreens();document.getElementById("testResult").style.display="block";
+ const t=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic];
+ let score=0,mistakes=[];
+ HAI_TEST.answers.forEach((a,i)=>{const q=t.questions[i];if(a.selected===q.correct)score++;else mistakes.push({number:i+1,question:q.q,student:q.options[a.selected],correct:q.options[q.correct],explanation:q.explanation,legalBasis:q.legalBasis})});
+ localStorage.setItem(`hai_score_${HAI_TEST.code}_${HAI_TEST.topic}`,score);
+ const completed=new Set(JSON.parse(localStorage.getItem("hai_completed_"+HAI_TEST.code)||"[]"));completed.add(HAI_TEST.topic);localStorage.setItem("hai_completed_"+HAI_TEST.code,JSON.stringify([...completed]));localStorage.setItem("hai_done_"+HAI_TEST.code,String(completed.size*20));
+ document.getElementById("testScore").textContent=`${score}/20 — ${Math.round(score/20*100)}%`;
+ document.getElementById("testResultText").textContent=`${mistakes.length} ta xato. Quyida xatolar va bazadagi huquqiy tushuntirishlar ko‘rsatilgan.`;
+ const m=document.getElementById("mistakeList");m.innerHTML="";
+ mistakes.forEach(x=>m.insertAdjacentHTML("beforeend",`<div class="haiMistake"><b>${x.number}-savol</b><br>Siz: ${x.student}<br><b>To‘g‘ri:</b> ${x.correct}<br>${x.explanation}<br><small>${x.legalBasis}</small></div>`));
+ HAI_TEST.lastResult={score,mistakes,topic:t.name};
+}
+async function analyzeMistakesWithGemini(){
+ const box=document.getElementById("geminiTestAnalysis");box.style.display="block";box.textContent="Gemini xatolaringizni tahlil qilmoqda...";
+ const r=HAI_TEST.lastResult;if(!r)return;
+ try{
+  const res=await fetch("/api/test-analysis",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({language:(typeof currentLanguage!=="undefined"?currentLanguage:"uz"),code:HAI_TEST.code,topic:r.topic,score:r.score,mistakes:r.mistakes})});
+  const data=await res.json();box.textContent=data.analysis||data.answer||"Tahlil olinmadi.";
+ }catch(e){box.textContent="Gemini tahliliga ulanishda xato. Serverdagi /api/test-analysis endpointini yangilang."}
+}
+// V11 portal becomes the first visible content without deleting the existing court.
+window.addEventListener("load",()=>setTimeout(showPortalChoice,80));
+</script>
+
+</body>
+</html>
