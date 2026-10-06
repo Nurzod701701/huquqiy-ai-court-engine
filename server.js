@@ -167,48 +167,47 @@ app.get("/api/session/:sessionId",(req,res)=>{
 
 app.post("/api/test-analysis", async (req,res)=>{
   try{
-    const l=lang(req.body?.language);
-    const code=txt(req.body?.code,30);
-    const topic=txt(req.body?.topic,300);
+    const l=lang(req.body?.language), code=txt(req.body?.code,30), topic=txt(req.body?.topic,300);
     const score=Number(req.body?.score||0);
+    const answers=Array.isArray(req.body?.answers)?req.body.answers.slice(0,20):[];
     const mistakes=Array.isArray(req.body?.mistakes)?req.body.mistakes.slice(0,20):[];
-    if(!mistakes.length){
-      const perfect=l==="ru"?"Ошибок нет. Отличный результат.":l==="en"?"No mistakes. Excellent result.":"Xato yo‘q. A’lo natija.";
-      return res.json({ok:true,analysis:perfect});
-    }
-    const stored=mistakes.map((m,i)=>`${i+1}) SAVOL: ${txt(m.question,1000)}
-TALABA JAVOBI: ${txt(m.student,500)}
-BAZADAGI TO‘G‘RI JAVOB: ${txt(m.correct,500)}
-BAZADAGI IZOH: ${txt(m.explanation,1000)}
-HUQUQIY ASOS YO‘NALISHI: ${txt(m.legalBasis,500)}`).join("\n\n");
-    if(!ai){
-      const local=l==="ru"?"Gemini API kaliti sozlanmagan. Xatolar yuqoridagi bazaviy izohlar bo‘yicha ko‘rsatildi.":l==="en"?"Gemini API key is not configured. Review the stored explanations above.":"Gemini API kaliti sozlanmagan. Yuqoridagi bazaviy tushuntirishlarni qayta ko‘rib chiqing.";
-      return res.json({ok:true,analysis:local,provider:"local-fallback"});
-    }
-    const prompt=`SEN HUQUQIY AI TEST TAHLILCHISISAN.
+    if(!answers.length)return res.status(400).json({ok:false,error:"No test answers received"});
+
+    const stored=answers.map((a,i)=>`${i+1}) SAVOL: ${txt(a.question,1000)}
+TALABA JAVOBI: ${txt(a.student,500)}
+NATIJA: ${a.isCorrect ? "TO‘G‘RI" : "XATO"}
+BAZADAGI TO‘G‘RI JAVOB: ${txt(a.correct,500)}
+BAZADAGI IZOH: ${txt(a.explanation,1000)}
+HUQUQIY ASOS: ${txt(a.legalBasis,500)}`).join("\n\n");
+
+    if(!ai)return res.json({ok:true,analysis:l==="ru"?"Gemini API kaliti sozlanmagan.":l==="en"?"Gemini API key is not configured.":"Gemini API kaliti sozlanmagan.",provider:"local-fallback"});
+
+    const prompt=`SEN HUQUQIY AI PROFESSIONAL TEST TAHLILCHISISAN.
 ${languageRule(l)}
 Kodeks: ${code}
 Mavzu: ${topic}
 Natija: ${score}/20
+Xatolar: ${mistakes.length}
 
-QAT'IY QOIDA:
-- To‘g‘ri javobni o‘zing qayta ixtiro qilma.
-- Faqat quyida server bazasidan berilgan TO‘G‘RI JAVOB va IZOHga tayangan holda talabaning xatosini tahlil qil.
-- Yangi modda raqamini o‘ylab topma.
-- Talabaning asosiy zaif mavzularini guruhla.
-- Har xatoni takrorlab cho‘zma; professional va tushunarli tahlil ber.
-- Yakunda 3-5 ta aniq o‘qish tavsiyasi ber.
+20 TA JAVOBNING HAMMASINI TAHLIL QIL.
+1) Avval umumiy bilim darajasini bahola.
+2) TO‘G‘RI javoblarni ham tahlil qil va nima uchun to‘g‘ri ekanini qisqa tushuntir.
+3) XATO javoblarda talaba javobi, to‘g‘ri javob va xato sababini tushuntir.
+4) Faqat bazadagi to‘g‘ri javob, izoh va huquqiy asosga tayan.
+5) Yangi modda raqami yoki huquqiy norma o‘ylab topma.
+6) Kuchli va zaif mavzularni ajrat.
+7) Yakunda 3-5 ta aniq o‘qish tavsiyasi ber.
+8) 20/20 bo‘lsa ham tahlilni davom ettir.
 
-XATOLAR:
+JAVOBLAR:
 ${stored}`;
-    const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{temperature:0.25}});
-    res.json({ok:true,analysis:txt(r.text,12000),provider:"gemini",language:l});
+    const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt,config:{temperature:0.2}});
+    res.json({ok:true,analysis:txt(r.text,16000),provider:"gemini",language:l,score,total:answers.length});
   }catch(e){
     console.error("TEST_ANALYSIS_ERROR:",e?.message||e);
     res.status(500).json({ok:false,error:"Test analysis failed"});
   }
 });
-
 
 /* EXPRESS 5 FIX: app.get("*") YO‘Q */
 app.use((req,res,next)=>{
