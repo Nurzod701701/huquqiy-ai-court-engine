@@ -5760,112 +5760,123 @@ function enterCourtPortal(){
  hideTestScreens(); const h=originalMain(); if(h)h.style.display="";
  if(typeof showScreen==="function"){try{showScreen("home")}catch(e){}}
 }
+
+const HAI_TEST_UI={
+ uz:{topic:"mavzu",tests:"test",progress:"progress",last:"oxirgi natija",next:"Keyingi savol →",result:"Natijani ko‘rish",loading:"Testlar tarjima qilinmoqda...",translateFail:"Tarjima vaqtincha olinmadi. Qayta urinib ko‘ring.",all:"Barcha javoblar",your:"Sizning javobingiz",correct:"To‘g‘ri javob",explain:"Izoh",basis:"Huquqiy asos",wrong:"XATO",right:"TO‘G‘RI"},
+ ru:{topic:"тема",tests:"тестов",progress:"прогресс",last:"последний результат",next:"Следующий вопрос →",result:"Показать результат",loading:"Тесты переводятся на русский...",translateFail:"Перевод временно недоступен. Попробуйте ещё раз.",all:"Все ответы",your:"Ваш ответ",correct:"Правильный ответ",explain:"Объяснение",basis:"Правовое основание",wrong:"ОШИБКА",right:"ВЕРНО"},
+ en:{topic:"topic",tests:"tests",progress:"progress",last:"last score",next:"Next question →",result:"Show result",loading:"Translating tests into English...",translateFail:"Translation is temporarily unavailable. Please try again.",all:"All answers",your:"Your answer",correct:"Correct answer",explain:"Explanation",basis:"Legal basis",wrong:"WRONG",right:"CORRECT"}
+};
+let HAI_TRANSLATED_TOPIC=null;
+function haiTestLang(){return ["uz","ru","en"].includes(currentLanguage)?currentLanguage:"uz"}
+function haiTestUI(){return HAI_TEST_UI[haiTestLang()]}
+
+async function loadTranslatedTopic(code,topicIndex){
+ const original=HAI_TEST_BANK[code].topics[topicIndex];
+ const l=haiTestLang();
+ if(l==="uz"){HAI_TRANSLATED_TOPIC=original;return true;}
+ const cacheKey=`hai_tr_v21_${l}_${code}_${topicIndex}`;
+ try{
+   const cached=localStorage.getItem(cacheKey);
+   if(cached){
+     const parsed=JSON.parse(cached);
+     if(parsed?.questions?.length===20){HAI_TRANSLATED_TOPIC={...original,...parsed};return true;}
+   }
+ }catch(e){}
+ const runner=document.getElementById("testRunner");
+ const box=document.getElementById("testQuestionBox");
+ if(runner)runner.style.display="block";
+ if(box)box.innerHTML=`<div style="padding:24px;text-align:center"><h3>${haiTestUI().loading}</h3><p>${code} • ${topicIndex+1}/5</p></div>`;
+ try{
+   const res=await fetch("/api/test-translate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+     language:l,code,topic:original.name,
+     questions:original.questions.map(q=>({id:q.id,q:q.q,options:q.options,correct:q.correct,explanation:q.explanation,legalBasis:q.legalBasis}))
+   })});
+   const data=await res.json();
+   if(!res.ok||!Array.isArray(data.questions)||data.questions.length!==20)throw new Error(data.error||"translation failed");
+   HAI_TRANSLATED_TOPIC={...original,questions:data.questions};
+   try{localStorage.setItem(cacheKey,JSON.stringify({name:original.name,questions:data.questions}))}catch(e){}
+   return true;
+ }catch(e){
+   if(box)box.innerHTML=`<div style="padding:24px;text-align:center"><h3>${haiTestUI().translateFail}</h3><button class="haiNext" onclick="startTopic(${topicIndex})">↻</button></div>`;
+   return false;
+ }
+}
 function openTestHub(){
  hideTestScreens(); const h=originalMain(); if(h)h.style.display="none";
  document.getElementById("testHub").style.display="block";
- const g=document.getElementById("testCodeGrid");g.innerHTML="";
+ const u=haiTestUI(),g=document.getElementById("testCodeGrid");g.innerHTML="";
  Object.entries(HAI_TEST_BANK).forEach(([code,d])=>{
   const done=Number(localStorage.getItem("hai_done_"+code)||0);
-  g.insertAdjacentHTML("beforeend",`<button class="haiCode" onclick="openTestTopics('${code}')"><b>${code}</b><span>${d.title}</span><small>5 mavzu • 100 test • progress ${Math.min(done,100)}/100</small></button>`);
+  g.insertAdjacentHTML("beforeend",`<button class="haiCode" onclick="openTestTopics('${code}')"><b>${code}</b><span>${d.title}</span><small>5 ${u.topic} • 100 ${u.tests} • ${u.progress} ${Math.min(done,100)}/100</small></button>`);
  });
 }
 function openTestTopics(code){
  HAI_TEST.code=code; hideTestScreens();document.getElementById("testTopics").style.display="block";
- const d=HAI_TEST_BANK[code];document.getElementById("topicCodeTitle").textContent=code+" — "+d.title;
+ const u=haiTestUI(),d=HAI_TEST_BANK[code];document.getElementById("topicCodeTitle").textContent=code+" — "+d.title;
  const g=document.getElementById("testTopicGrid");g.innerHTML="";
  d.topics.forEach((t,i)=>{
   const key=`hai_score_${code}_${i}`,score=localStorage.getItem(key);
-  g.insertAdjacentHTML("beforeend",`<button class="haiTopic" onclick="startTopic(${i})"><b>${i+1}-mavzu</b><span>${t.name}</span><small>20 ta test${score!==null?" • oxirgi natija "+score+"/20":""}</small></button>`);
+  g.insertAdjacentHTML("beforeend",`<button class="haiTopic" onclick="startTopic(${i})"><b>${i+1}-${u.topic}</b><span>${t.name}</span><small>20 ${u.tests}${score!==null?" • "+u.last+" "+score+"/20":""}</small></button>`);
  });
 }
 function backToTopics(){if(HAI_TEST.code)openTestTopics(HAI_TEST.code);else openTestHub()}
-function startTopic(i){
- HAI_TEST.topic=i;HAI_TEST.index=0;HAI_TEST.answers=[];HAI_TEST.selected=null;
- hideTestScreens();document.getElementById("testRunner").style.display="block";renderQuestion();
+async function startTopic(i){
+ HAI_TEST.topic=i;HAI_TEST.index=0;HAI_TEST.answers=[];HAI_TEST.selected=null;HAI_TEST.selectedText=null;
+ hideTestScreens();document.getElementById("testRunner").style.display="block";
+ const ok=await loadTranslatedTopic(HAI_TEST.code,i);
+ if(ok)renderQuestion();
 }
+function currentTopic(){return HAI_TRANSLATED_TOPIC||HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic]}
 function renderQuestion(){
- const t=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic],q=t.questions[HAI_TEST.index];
- document.getElementById("testMeta").textContent=`${HAI_TEST.code} • ${HAI_TEST.topic+1}-mavzu • ${HAI_TEST.index+1}/20`;
+ const u=haiTestUI(),t=currentTopic(),q=t.questions[HAI_TEST.index];
+ document.getElementById("testMeta").textContent=`${HAI_TEST.code} • ${HAI_TEST.topic+1}-${u.topic} • ${HAI_TEST.index+1}/20`;
  document.getElementById("testProgressBar").style.width=((HAI_TEST.index)/20*100)+"%";
  const box=document.getElementById("testQuestionBox");
- box.innerHTML=`<small>${t.name}</small><h3>${HAI_TEST.index+1}. ${q.q}</h3><div id="opts"></div><button id="testNext" class="haiNext" disabled onclick="nextTestQuestion()">${HAI_TEST.index===19?"Natijani ko‘rish":"Keyingi savol →"}</button>`;
+ box.innerHTML=`<small>${t.name}</small><h3>${HAI_TEST.index+1}. ${q.q}</h3><div id="opts"></div><button id="testNext" class="haiNext" disabled onclick="nextTestQuestion()">${HAI_TEST.index===19?u.result:u.next}</button>`;
  const correctText=String(q.options[Number(q.correct)]||"");
- // Display order rotates per question. Correctness is checked by answer TEXT, not A/B/C/D index.
- const order=[0,1,2,3];
- const shift=(HAI_TEST.index+HAI_TEST.topic)%4;
+ const order=[0,1,2,3],shift=(HAI_TEST.index+HAI_TEST.topic)%4;
  for(let k=0;k<shift;k++)order.push(order.shift());
  const o=document.getElementById("opts");
  order.forEach((originalIndex,displayIndex)=>{
-   const x=q.options[originalIndex];
-   const safe=encodeURIComponent(String(x));
+   const x=q.options[originalIndex],safe=encodeURIComponent(String(x));
    o.insertAdjacentHTML("beforeend",`<button class="haiOption" data-answer="${safe}" onclick="selectTestOptionValue(this)"><b>${"ABCD"[displayIndex]}.</b> ${x}</button>`);
  });
- HAI_TEST.correctText=correctText;
- HAI_TEST.selectedText=null;
+ HAI_TEST.correctText=correctText;HAI_TEST.selectedText=null;
 }
 function selectTestOptionValue(el){
  HAI_TEST.selectedText=decodeURIComponent(el.dataset.answer||"");
  document.querySelectorAll(".haiOption").forEach(x=>x.classList.remove("selected"));
- el.classList.add("selected");
- document.getElementById("testNext").disabled=false;
+ el.classList.add("selected");document.getElementById("testNext").disabled=false;
 }
 function nextTestQuestion(){
- const q=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic].questions[HAI_TEST.index];
- const correctText=String(q.options[Number(q.correct)]||"");
- const selectedText=String(HAI_TEST.selectedText||"");
- HAI_TEST.answers.push({
-   id:q.id,
-   selectedText,
-   correctText,
-   isCorrect:selectedText.trim()===correctText.trim()
- });
- if(HAI_TEST.index<19){
-   HAI_TEST.index++;HAI_TEST.selectedText=null;HAI_TEST.correctText=null;renderQuestion();
- }else finishTest();
+ const q=currentTopic().questions[HAI_TEST.index];
+ const correctText=String(q.options[Number(q.correct)]||""),selectedText=String(HAI_TEST.selectedText||"");
+ HAI_TEST.answers.push({id:q.id,selectedText,correctText,isCorrect:selectedText.trim()===correctText.trim()});
+ if(HAI_TEST.index<19){HAI_TEST.index++;HAI_TEST.selectedText=null;renderQuestion()}else finishTest();
 }
 function finishTest(){
  hideTestScreens();document.getElementById("testResult").style.display="block";
- const t=HAI_TEST_BANK[HAI_TEST.code].topics[HAI_TEST.topic];
- let score=0,mistakes=[],allAnswers=[];
+ const u=haiTestUI(),t=currentTopic();let score=0,mistakes=[],allAnswers=[];
  HAI_TEST.answers.forEach((a,i)=>{
-   const q=t.questions[i];
-   const isCorrect=String(a.selectedText||"").trim()===String(a.correctText||"").trim();
+   const q=t.questions[i],isCorrect=String(a.selectedText||"").trim()===String(a.correctText||"").trim();
    if(isCorrect)score++;
-   const row={
-     number:i+1,question:q.q,
-     student:a.selectedText||"Javob belgilanmagan",
-     correct:a.correctText||q.options[Number(q.correct)],
-     isCorrect,
-     explanation:q.explanation,
-     legalBasis:q.legalBasis
-   };
-   allAnswers.push(row);
-   if(!isCorrect)mistakes.push(row);
+   const row={number:i+1,question:q.q,student:a.selectedText||"-",correct:a.correctText||q.options[Number(q.correct)],isCorrect,explanation:q.explanation,legalBasis:q.legalBasis};
+   allAnswers.push(row);if(!isCorrect)mistakes.push(row);
  });
  localStorage.setItem(`hai_score_${HAI_TEST.code}_${HAI_TEST.topic}`,score);
- const completed=new Set(JSON.parse(localStorage.getItem("hai_completed_"+HAI_TEST.code)||"[]"));
- completed.add(HAI_TEST.topic);
- localStorage.setItem("hai_completed_"+HAI_TEST.code,JSON.stringify([...completed]));
- localStorage.setItem("hai_done_"+HAI_TEST.code,String(completed.size*20));
+ const completed=new Set(JSON.parse(localStorage.getItem("hai_completed_"+HAI_TEST.code)||"[]"));completed.add(HAI_TEST.topic);
+ localStorage.setItem("hai_completed_"+HAI_TEST.code,JSON.stringify([...completed]));localStorage.setItem("hai_done_"+HAI_TEST.code,String(completed.size*20));
  document.getElementById("testScore").textContent=`${score}/20 — ${Math.round(score/20*100)}%`;
- document.getElementById("testResultText").textContent=`${mistakes.length} ta xato. Gemini barcha ${allAnswers.length} ta javobni tahlil qiladi.`;
+ document.getElementById("testResultText").textContent=haiTestLang()==="ru"?`${mistakes.length} ошибок. Анализируются все 20 ответов.`:haiTestLang()==="en"?`${mistakes.length} wrong. All 20 answers are analyzed.`:`${mistakes.length} ta xato. Barcha 20 javob tahlil qilinadi.`;
  const m=document.getElementById("mistakeList");m.innerHTML="";
- // V18: Natijada faqat xatolar emas, 20 ta javobning HAMMASI ko‘rsatiladi.
  allAnswers.forEach(x=>{
-   const status=x.isCorrect?"✅ TO‘G‘RI":"❌ XATO";
-   const correctLine=x.isCorrect
-     ? `<b>Sizning javobingiz:</b> ${x.student}`
-     : `<b>Sizning javobingiz:</b> ${x.student}<br><b>To‘g‘ri javob:</b> ${x.correct}`;
-   m.insertAdjacentHTML("beforeend",`
-     <div class="haiMistake ${x.isCorrect?"haiCorrectAnswer":"haiWrongAnswer"}">
-       <b>${x.number}-savol — ${status}</b><br>
-       ${correctLine}<br>
-       <b>Izoh:</b> ${x.explanation||"Izoh mavjud emas."}<br>
-       <small><b>Huquqiy asos:</b> ${x.legalBasis||"Ko‘rsatilmagan"}</small>
-     </div>`);
+   const status=x.isCorrect?`✅ ${u.right}`:`❌ ${u.wrong}`;
+   const correctLine=x.isCorrect?`<b>${u.your}:</b> ${x.student}`:`<b>${u.your}:</b> ${x.student}<br><b>${u.correct}:</b> ${x.correct}`;
+   m.insertAdjacentHTML("beforeend",`<div class="haiMistake ${x.isCorrect?"haiCorrectAnswer":"haiWrongAnswer"}"><b>${x.number} — ${status}</b><br>${correctLine}<br><b>${u.explain}:</b> ${x.explanation||"-"}<br><small><b>${u.basis}:</b> ${x.legalBasis||"-"}</small></div>`);
  });
  HAI_TEST.lastResult={score,mistakes,allAnswers,topic:t.name};
 }
+
 async function analyzeMistakesWithGemini(){
  const box=document.getElementById("geminiTestAnalysis");
  box.style.display="block";
@@ -5957,6 +5968,6 @@ function haiReturnToMainPortal(){
 })();
 </script>
 
-<div id="haiBuildVersion" style="display:none">V20-MOBILE-IPHONE-ANDROID</div>
+<div id="haiBuildVersion" style="display:none">V21-MULTILINGUAL-TESTS</div>
 </body>
 </html>
