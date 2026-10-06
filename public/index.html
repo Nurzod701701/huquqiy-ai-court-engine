@@ -1008,6 +1008,13 @@ td,th{padding:13px 15px!important;border-bottom:1px solid rgba(212,175,55,.15)!i
 }
 </style>
 
+
+<style>
+.haiCorrectAnswer{border-left:5px solid currentColor;opacity:.92}
+.haiWrongAnswer{border-left:5px solid currentColor}
+#mistakeList .haiMistake{margin:12px 0;padding:16px;border-radius:14px}
+</style>
+
 </head>
 
 <body>
@@ -5675,8 +5682,20 @@ function finishTest(){
  document.getElementById("testScore").textContent=`${score}/20 — ${Math.round(score/20*100)}%`;
  document.getElementById("testResultText").textContent=`${mistakes.length} ta xato. Gemini barcha ${allAnswers.length} ta javobni tahlil qiladi.`;
  const m=document.getElementById("mistakeList");m.innerHTML="";
- if(!mistakes.length)m.innerHTML='<div class="haiMistake"><b>Xato aniqlanmadi.</b><br>Gemini baribir barcha javoblarni tahlil qiladi.</div>';
- mistakes.forEach(x=>m.insertAdjacentHTML("beforeend",`<div class="haiMistake"><b>${x.number}-savol — XATO</b><br>Siz: ${x.student}<br><b>To‘g‘ri:</b> ${x.correct}<br>${x.explanation}<br><small>${x.legalBasis}</small></div>`));
+ // V18: Natijada faqat xatolar emas, 20 ta javobning HAMMASI ko‘rsatiladi.
+ allAnswers.forEach(x=>{
+   const status=x.isCorrect?"✅ TO‘G‘RI":"❌ XATO";
+   const correctLine=x.isCorrect
+     ? `<b>Sizning javobingiz:</b> ${x.student}`
+     : `<b>Sizning javobingiz:</b> ${x.student}<br><b>To‘g‘ri javob:</b> ${x.correct}`;
+   m.insertAdjacentHTML("beforeend",`
+     <div class="haiMistake ${x.isCorrect?"haiCorrectAnswer":"haiWrongAnswer"}">
+       <b>${x.number}-savol — ${status}</b><br>
+       ${correctLine}<br>
+       <b>Izoh:</b> ${x.explanation||"Izoh mavjud emas."}<br>
+       <small><b>Huquqiy asos:</b> ${x.legalBasis||"Ko‘rsatilmagan"}</small>
+     </div>`);
+ });
  HAI_TEST.lastResult={score,mistakes,allAnswers,topic:t.name};
 }
 async function analyzeMistakesWithGemini(){
@@ -5770,6 +5789,6 @@ function haiReturnToMainPortal(){
 })();
 </script>
 
-<div id="haiBuildVersion" style="display:none">V16-FINAL</div>
+<div id="haiBuildVersion" style="display:none">V18-ALL-ANSWERS</div>
 </body>
 </html>
