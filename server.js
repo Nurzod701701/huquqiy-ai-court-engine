@@ -85,7 +85,7 @@ async function fastGeminiRequest(prompt, language) {
         }
 
         if (attempt < GEMINI_MAX_RETRIES) {
-          await geminiWait(500 * (attempt + 1));
+          await geminiWait(1200 * (attempt + 1));
         }
       }
     }
@@ -214,12 +214,8 @@ ${q}
 
 Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
 
- const r=await ai.models.generateContent({
-   model:GEMINI_MODEL,
-   contents:prompt,
-   config:{systemInstruction:systemPrompt(l),responseMimeType:"application/json",temperature:0.4}
- });
- const o=parseJSON(r.text || "");
+ const geminiResponse=await fastGeminiRequest(prompt,l);
+ const o=parseJSON(geminiResponse.text);
  const result={
   kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
   target:o.target==null?null:txt(o.target,100),
@@ -229,7 +225,7 @@ Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish 
  };
  if(!result.answer)Object.assign(result,fallback(l,a));
  remember(s,{at:new Date().toISOString(),student:q,answer:result.answer,judgeReaction:result.judgeReaction,kind:result.kind,stage:txt(b.stage,100)});
- return{...result,provider:"gemini",model:GEMINI_MODEL,language:l,memoryTurns:s.turns.length};
+ return{...result,provider:"gemini",model:geminiResponse.model,language:l,memoryTurns:s.turns.length};
 }
 
 app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V22",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
