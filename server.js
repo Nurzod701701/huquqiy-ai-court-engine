@@ -7,6 +7,92 @@ const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_BACKUP_MODEL =
+  process.env.GEMINI_BACKUP_MODEL || "";
+
+const GEMINI_MAX_RETRIES = 2;
+
+function geminiTemporaryError(error) {
+  const message = String(error?.message || error || "");
+
+  return (
+    /503|UNAVAILABLE|high demand|overload|temporar/i.test(message) ||
+    /429|RESOURCE_EXHAUSTED|rate limit/i.test(message)
+  );
+}
+
+function geminiModelUnavailable(error) {
+  const message = String(error?.message || error || "");
+
+  return /404|NOT_FOUND|model.*not.*found|model.*no longer available/i.test(message);
+}
+
+function geminiWait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fastGeminiRequest(prompt, language) {
+  if (!ai) {
+    throw new Error("GEMINI_API_KEY sozlanmagan");
+  }
+
+  const models = [
+    GEMINI_MODEL,
+    GEMINI_BACKUP_MODEL
+  ].filter((model, index, arr) =>
+    model && arr.indexOf(model) === index
+  );
+
+  let lastError;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            systemInstruction: systemPrompt(language),
+            responseMimeType: "application/json",
+            temperature: 0.4
+          }
+        });
+
+        if (!response?.text?.trim()) {
+          throw new Error("Gemini bo'sh javob qaytardi");
+        }
+
+        return {
+          text: response.text,
+          model
+        };
+
+      } catch (error) {
+        lastError = error;
+
+        console.error("GEMINI_ATTEMPT_ERROR", {
+          model,
+          attempt: attempt + 1,
+          message: String(error?.message || error).slice(0, 500)
+        });
+
+        if (geminiModelUnavailable(error)) {
+          break;
+        }
+
+        if (!geminiTemporaryError(error)) {
+          throw error;
+        }
+
+        if (attempt < GEMINI_MAX_RETRIES) {
+          await geminiWait(500 * (attempt + 1));
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error("Gemini javob bermadi");
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
