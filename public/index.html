@@ -4289,11 +4289,11 @@ async function getCourtEngineReaction(item,value){
     });
     if(!response.ok) throw new Error("AI backend HTTP "+response.status);
     const data=await response.json();
-    if(!data || !data.ok || data.provider!=="gemini" || !data.kind) throw new Error(data?.error || "Gemini javobi kelmadi");
+    if(!data || !data.ok || data.provider!=="openai" || !data.kind) throw new Error(data?.error || "OpenAI javobi kelmadi");
     return data;
   }catch(error){
     console.warn("AI Court Engine ulanmagan, LOCAL fallback ishladi:",error);
-    return {kind:"AI_ERROR",target:null,answer:"Gemini AI hozir javob bermayapti: "+String(error.message||error),judgeReaction:"",continueStage:false};
+    return {kind:"AI_ERROR",target:null,answer:"OpenAI hozir javob bermayapti: "+String(error.message||error),judgeReaction:"",continueStage:false};
   }
 }
 
@@ -5803,7 +5803,7 @@ setTimeout(()=>applyLanguage(uiLang),0);
   <div id="testScore" class="haiScore"></div>
   <p id="testResultText"></p>
   <div id="mistakeList"></div>
-  <button class="haiAnalyze" onclick="analyzeMistakesWithGemini()">✨ Gemini bilan xatolarni tahlil qilish</button>
+  <button class="haiAnalyze" onclick="analyzeMistakesWithGemini()">✨ AI bilan xatolarni tahlil qilish</button>
   <div id="geminiTestAnalysis" style="display:none"></div>
  </div>
 </section>
@@ -5942,7 +5942,7 @@ function finishTest(){
 async function analyzeMistakesWithGemini(){
  const box=document.getElementById("geminiTestAnalysis");
  box.style.display="block";
- box.textContent="Gemini 20 ta javobingizni tahlil qilmoqda...";
+ box.textContent="OpenAI 20 ta javobingizni tahlil qilmoqda...";
  // V16 final matched frontend/backend
  const r=HAI_TEST.lastResult;
  if(!r||!Array.isArray(r.allAnswers)){box.textContent="Test natijalari topilmadi. Testni qayta yakunlang.";return;}
@@ -5964,14 +5964,14 @@ async function analyzeMistakesWithGemini(){
     return;
   }
   if(!res.ok){
-    box.textContent=`Gemini tahlil xatosi (${res.status}): ${data.error||data.message||"noma’lum server xatosi"}`;
+    box.textContent=`OpenAI tahlil xatosi (${res.status}): ${data.error||data.message||"noma’lum server xatosi"}`;
     return;
   }
-  if(data.provider!=="gemini"){box.textContent="Gemini ishlamadi: "+(data.error||"AI ulanmagan");return;}
+  if(data.provider!=="openai"){box.textContent="OpenAI ishlamadi: "+(data.error||"AI ulanmagan");return;}
   const analysis=data.analysis||data.answer||data.text||data.result;
   box.textContent=analysis?analysis:"Server javob berdi, lekin tahlil matni bo‘sh. Provider: "+(data.provider||"noma’lum");
  }catch(e){
-  box.textContent="Gemini tahliliga ulanishda xato: "+(e?.message||String(e));
+  box.textContent="OpenAI tahliliga ulanishda xato: "+(e?.message||String(e));
  }
 }
 
@@ -6036,55 +6036,38 @@ function haiReturnToMainPortal(){
 
 
 
-<style id="white-gold-unified-premium-20261008">
-/* BARCHA SAHIFALAR: oq qog'oz, qora matn, tilla aksent */
-:root{--hai-gold:#bd9346;--hai-dark:#24201a;--hai-paper:#fffdf8}
-html,body{background:#f7f5ef!important;color:#24201a!important}
-.haiPortal{color:#24201a!important}
-.haiHero{background:linear-gradient(145deg,#fffefa,#f9f5eb)!important;
-  border:2px solid #c9a75f!important;box-shadow:0 12px 32px #70531c14!important;color:#24201a!important}
-.haiHero h1,.haiHero h2,.haiHero h3,.haiHero p,
-.haiTop,.haiTop b,#topicCodeTitle,#testMeta{color:#24201a!important;text-shadow:none!important;opacity:1!important}
-.haiHero h2{font-family:Georgia,'Times New Roman',serif!important;
-  font-size:clamp(27px,3vw,39px)!important;line-height:1.25!important}
-.haiHero p{font-size:17px!important;line-height:1.7!important}
-.haiChoice,.haiCode,.haiTopic{background:#fff!important;color:#24201a!important;
-  border:2px solid #d0ae66!important;box-shadow:0 7px 20px #71521b13!important;
-  min-height:140px!important;transition:transform .2s,border-color .2s!important}
-.haiChoice:hover,.haiCode:hover,.haiTopic:hover{background:#fff9eb!important;
-  border-color:#a77b2d!important;transform:translateY(-2px)}
-.haiChoice b,.haiCode b,.haiTopic b{color:#252019!important;
-  font-family:Georgia,'Times New Roman',serif!important;font-size:22px!important;line-height:1.4!important}
-.haiChoice small,.haiCode small,.haiTopic small{color:#62594a!important;
-  font-size:15px!important;line-height:1.65!important}
-.haiBack{background:#fff!important;color:#272019!important;border:1px solid #bd9346!important;
-  font-size:15px!important;min-height:46px!important}
-.haiQuestion{background:#fffefa!important;border:2px solid #c9a75f!important;color:#24201a!important}
-.haiQuestion h3,.haiQuestion p,.haiQuestion div{color:#24201a!important}
-.haiOption{background:#fff!important;color:#24201a!important;border:1px solid #d2bc8c!important;
-  font-size:16px!important;line-height:1.55!important}
-.haiOption:hover,.haiOption.selected{background:#fff2d4!important;color:#24201a!important;
-  border-color:#a77b2d!important}
-.haiProgress{background:#eee5d4!important;border-color:#d5b979!important}
-.haiProgress>i{background:linear-gradient(90deg,#a77b2d,#e6c578)!important}
-.haiNext,.haiAnalyze{background:linear-gradient(135deg,#f3d992,#c49b4b)!important;
-  color:#241b10!important;border:1px solid #a77b2d!important;font-size:16px!important}
-.haiScore{color:#946820!important}
-.haiMistake,#geminiTestAnalysis{background:#fffefa!important;color:#24201a!important;
-  border:1px solid #d6b878!important}
-#home.card,#home .luxHero,#home .grid{background:#fffdf8!important;color:#24201a!important}
-#home .luxHero h2,#home .luxHero p,#home .luxSectionTitle,
-#home .item h3,#home .item p{color:#24201a!important;text-shadow:none!important}
-#home .item{background:#fff!important;border:2px solid #d0ae66!important}
-#home .item:hover{background:#fff8e8!important}
-@media(max-width:760px){
- .haiPortal{margin:16px auto!important;padding:0 12px!important}
- .haiHero{padding:20px 16px!important;border-radius:17px!important}
- .haiChoice,.haiCode,.haiTopic{min-height:110px!important;padding:18px!important}
- .haiChoice b,.haiCode b,.haiTopic b{font-size:19px!important}
- .haiHero h2{font-size:28px!important}
- .haiChoiceGrid,.haiCodeGrid,.haiTopicGrid{grid-template-columns:1fr!important;gap:13px!important}
-}
+<style id="premium-white-gold-final-20261008">
+/* FINAL WHITE & GOLD — visual overrides only, existing JS and content retained */
+:root{--hai-gold:#b88b38;--hai-line:#c9aa6a;--hai-ink:#252725}
+html,body{background:#f6f5f1!important;color:#252725!important}
+.haiPortal{color:#252725!important}
+.haiHero{background:linear-gradient(145deg,#ffffff,#faf8f2)!important;border:1.5px solid #c7a562!important;box-shadow:0 16px 40px rgba(63,48,22,.09)!important;color:#252725!important}
+.haiHero h1,.haiHero h2,.haiHero h3,.haiHero>p,.haiPortal .haiTop,.haiPortal .haiTop b{color:#242725!important;text-shadow:none!important}
+.haiHero h2{font-family:Georgia,'Times New Roman',serif!important;font-size:clamp(26px,3.3vw,40px)!important;line-height:1.25!important;font-weight:700!important;margin-top:0!important}
+.haiHero>p{font-size:17px!important;line-height:1.65!important;color:#56534d!important}
+.haiChoice,.haiCode,.haiTopic,.haiChoiceCard,.haiCodeCard,.haiTopicCard{background:linear-gradient(150deg,#fffefa,#f6f0e5)!important;color:#282a27!important;border:1.5px solid #c9ad77!important;box-shadow:0 8px 22px rgba(60,45,20,.07)!important;text-shadow:none!important}
+.haiChoice:hover,.haiCode:hover,.haiTopic:hover{border-color:#9e752c!important;background:#fff9e9!important;box-shadow:0 12px 28px rgba(68,49,18,.13)!important}
+.haiChoice b,.haiCode b,.haiTopic b,.haiChoiceCard b,.haiCodeCard b,.haiTopicCard b{color:#292a27!important;font-family:Georgia,'Times New Roman',serif!important;font-size:clamp(19px,2vw,24px)!important}
+.haiChoice small,.haiCode small,.haiTopic small,.haiChoiceCard small,.haiCodeCard small,.haiTopicCard small{color:#625d52!important;font-size:15px!important;line-height:1.6!important}
+.haiBack{background:#f5ebd8!important;color:#382e20!important;border:1px solid #c7a562!important;font-size:15px!important}
+.haiQuestion{background:#fffefa!important;color:#252725!important;border:1.5px solid #c7a562!important;box-shadow:0 10px 28px rgba(40,32,18,.07)!important}
+.haiQuestion h3,.haiQuestion p,.haiQuestion b,.haiQuestion strong{color:#292a27!important}
+.haiOption{background:#fff!important;color:#292a27!important;border:1px solid #d7c6a5!important;font-size:16px!important}
+.haiOption.selected{background:#fff0c9!important;color:#28251e!important;border-color:#b88b38!important}
+.haiNext,.haiAnalyze{background:linear-gradient(135deg,#f1d99c,#d3ad5c,#b98d3b)!important;color:#252018!important;border:1px solid #a67c32!important}
+.haiScore{color:#8a621f!important}
+.haiMistake,#geminiTestAnalysis{background:#fffaf0!important;color:#2d2b25!important;border-color:#c7a562!important}
+.haiProgress{background:#e8dfcb!important;border-color:#d0b782!important}
+.haiPortal button:focus-visible{outline:3px solid #9a732e!important;outline-offset:3px}
+/* Existing simulator screens retain layout; make backgrounds and text legible */
+#home>h2,.hero{background:linear-gradient(120deg,#fffefa,#f4ecdc)!important;color:#282a27!important;text-shadow:none!important}
+#home>h2,#home>h2:after,.hero h2,.hero p,.heroTag{color:#282a27!important;text-shadow:none!important}
+#home>.grid,.homeContent,.pageBody,.resultBody{background:#fffefa!important}
+.directionCard,.caseCard,.item{background:#fffefa!important;color:#282a27!important;border-color:#c9ad77!important}
+.directionCard h3,.caseCard h3,.item h3{color:#252725!important}
+.directionCard p,.caseCard p,.item p{color:#60594c!important}
+.primary,.send,.judgeAction{background:linear-gradient(180deg,#e9cc8c,#bb9147)!important;color:#241e14!important;border:1px solid #a27b38!important}
+@media(max-width:760px){.haiHero{padding:22px 16px!important;border-radius:17px!important}.haiPortal{margin:18px auto!important;padding:0 12px!important}.haiChoiceGrid,.haiCodeGrid,.haiTopicGrid{grid-template-columns:1fr!important;gap:13px!important}.haiChoice,.haiCode,.haiTopic{padding:20px 17px!important}.haiHero h2{font-size:27px!important}.haiHero>p{font-size:16px!important}}
 </style>
 
 </body>
