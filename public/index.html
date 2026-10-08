@@ -1183,6 +1183,21 @@ main,section,.container,.wrapper,.content,.panel,.card{
 }
 </style>
 
+
+<style id="hai-professional-v22">
+:root{--hai-navy:#102b4e;--hai-blue:#174777;--hai-graphite:#293442;--hai-bg:#f3f6fa;--hai-border:#dce4ed;--hai-text:#172b43}
+html{scroll-behavior:smooth}body{background:var(--hai-bg)!important;background-image:none!important;color:var(--hai-text)!important;font-family:Inter,Arial,sans-serif!important}body:before{display:none!important}
+header{background:linear-gradient(115deg,#0b213e,#183b63)!important;border-bottom:3px solid #8daac8!important;box-shadow:0 7px 25px #102b4e20!important}header:before,header:after{display:none!important}header h1{font-family:Inter,Arial,sans-serif!important;text-shadow:none!important;font-size:26px!important;letter-spacing:0!important}header h1:before{display:none!important}
+.card,#home,.item,.roleSelectionShell,.sourcePanel,.caseText,.participantIdentityCard{background:#fff!important;background-image:none!important;border:1px solid var(--hai-border)!important;box-shadow:0 7px 24px #102b4e0c!important;border-radius:16px!important;color:var(--hai-text)!important}
+#home>h2,.hero,#court>h2{background:linear-gradient(115deg,#102b4e,#214d7b)!important;color:#fff!important;font-family:Inter,Arial,sans-serif!important;text-shadow:none!important}#home>h2:after{color:#d9e7f5!important}#home>.grid{background:#fff!important}.item{min-height:145px!important;padding:23px!important}.item:before{background:#2c6194!important}.item:after{color:#183b6315!important}.item:hover,.role:hover{border-color:#4376a8!important;transform:translateY(-2px)!important}.item h3,.roleName,.sourceCard strong,.roleSelectionHead h3{font-family:Inter,Arial,sans-serif!important;color:#123b65!important}
+.primary,.judgeAction,.send,.openCase{background:#174777!important;background-image:none!important;color:#fff!important;border:1px solid #174777!important;border-radius:10px!important;box-shadow:none!important;font-size:16px!important;font-weight:700!important;min-height:45px}.primary:after,.send:after{display:none!important}.primary:hover,.send:hover{background:#10375f!important;transform:none!important}
+.back{background:#e8eef5!important;color:#173b61!important;border:1px solid #cbd8e6!important;font-size:15px!important}.role{background:#fff!important;color:#173b61!important}.role.selected{background:#174777!important;background-image:none!important;color:#fff!important;border:2px solid #174777!important}.role.selected:after{background:#dceafb!important;color:#123b65!important}
+#court{background:#fff!important;border:1px solid #cbd8e6!important;box-shadow:0 12px 32px #102b4e18!important}#court:before,#court>h2:before,#court>h2:after{display:none!important}#courtInfo{background:#263a51!important;color:#fff!important}#stageTitle{background:#e8f0f8!important;color:#153b64!important;border-left:4px solid #2a6096!important}#stageTitle:before{color:#55718c!important}#chat,.chat{background:#f5f8fc!important;border:1px solid #d6e1ed!important;box-shadow:none!important}.message{border-radius:12px!important;box-shadow:none!important}.judge{background:#e8f0f8!important;border-left-color:#174777!important}.student{background:#e7f5ef!important;border-left-color:#287a57!important}.prosecutor{background:#fbeceb!important;border-left-color:#aa5047!important}.defense{background:#e9f2fc!important;border-left-color:#3370ac!important}.system{background:#f1f3f6!important}.turn,#turnInfo{background:#f1f6fc!important;color:#173b61!important;border-color:#cad9e9!important}textarea{background:#fff!important;border:1px solid #b9cbde!important;color:#152e4a!important;font-size:17px!important}textarea:focus{border-color:#3776b4!important;box-shadow:0 0 0 3px #3776b422!important}
+#prepare,#casesScreen,#result{border-top:4px solid #174777!important}.score{color:#174777!important;font-family:Inter,Arial,sans-serif!important}.scoreBox,.sourceCard,.feedback,.privateInfo{background:#f7f9fc!important;border-color:#dce4ed!important}.roleGuide{background:#173b61!important;color:#fff!important;border-color:#456d94!important}
+#haiGlobalHomeBtn{background:#174777!important;background-image:none!important;color:#fff!important;border:1px solid #174777!important;box-shadow:0 5px 20px #102b4e28!important}
+button{touch-action:manipulation}button:focus-visible,.item:focus-visible{outline:3px solid #69a4de!important;outline-offset:2px}
+@media(max-width:750px){header{padding:18px!important}header h1{font-size:21px!important}.container{padding:0 12px!important}.card{padding:18px!important}#home>h2{font-size:27px!important;padding:32px 20px!important}.item{min-height:125px!important}.primary,.send,.back{font-size:16px!important}#chat{height:52vh!important;min-height:300px!important}.roleSelectionShell{padding:16px!important}}
+</style>
 </head>
 
 <body>
@@ -4228,11 +4243,11 @@ async function getCourtEngineReaction(item,value){
     });
     if(!response.ok) throw new Error("AI backend HTTP "+response.status);
     const data=await response.json();
-    if(!data || !data.kind) throw new Error("AI backend invalid response");
+    if(!data || !data.ok || data.provider!=="gemini" || !data.kind) throw new Error(data?.error || "Gemini javobi kelmadi");
     return data;
   }catch(error){
     console.warn("AI Court Engine ulanmagan, LOCAL fallback ishladi:",error);
-    return buildLocalCourtReaction(item,value);
+    return {kind:"AI_ERROR",target:null,answer:"Gemini AI hozir javob bermayapti: "+String(error.message||error),judgeReaction:"",continueStage:false};
   }
 }
 
@@ -4413,6 +4428,7 @@ $("send").disabled=true;
 waitingForStudent=false;
 
 const reaction=await getCourtEngineReaction(item,value);
+if(reaction.kind==="AI_ERROR"){ addMessage("system","AI ulanish xatosi",reaction.answer); $("answer").value=value; $("answer").disabled=false; $("send").disabled=false; waitingForStudent=true; studentAnswers.pop(); return; }
 
 /* Talaba savol-javobni o‘zi yakunladi */
 if(reaction.kind==="END"){
@@ -5905,6 +5921,7 @@ async function analyzeMistakesWithGemini(){
     box.textContent=`Gemini tahlil xatosi (${res.status}): ${data.error||data.message||"noma’lum server xatosi"}`;
     return;
   }
+  if(data.provider!=="gemini"){box.textContent="Gemini ishlamadi: "+(data.error||"AI ulanmagan");return;}
   const analysis=data.analysis||data.answer||data.text||data.result;
   box.textContent=analysis?analysis:"Server javob berdi, lekin tahlil matni bo‘sh. Provider: "+(data.provider||"noma’lum");
  }catch(e){
