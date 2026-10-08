@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,7 +99,7 @@ function parseJSON(raw){
 async function courtTurn(b){
  const l=lang(b.language), s=session(b.sessionId), q=txt(b.question||b.prompt,6000), a=action(q), c=caseData(b);
  if(!q) throw new Error("Savol yoki pozitsiya kiritilmagan");
- if(!ai)return{...fallback(l,a),provider:"local-fallback",language:l,warning:"GEMINI_API_KEY is not configured"};
+ if(!ai) throw new Error("GEMINI_API_KEY sozlanmagan");
 
  const prompt=`LANGUAGE: ${l}
 DIRECTION: ${txt(b.direction,100)}
@@ -145,14 +145,14 @@ Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish 
  return{...result,provider:"gemini",model:GEMINI_MODEL,language:l,memoryTurns:s.turns.length};
 }
 
-app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V9",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
+app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V22",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
 
 app.post("/api/court-turn",async(req,res)=>{
  try{res.json({ok:true,...await courtTurn(req.body||{})})}
  catch(e){
   console.error("COURT_TURN_ERROR:",e?.message||e);
   const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
-  res.json({ok:true,...fallback(l,a),provider:"local-fallback",language:l,error:txt(e?.message||"Court engine error",500)});
+  res.status(503).json({ok:false,provider:"gemini-error",language:l,error:txt(e?.message||"Court engine error",500)});
  }
 });
 
@@ -209,7 +209,7 @@ app.post("/api/test-analysis", async (req,res)=>{
   const fallback=()=>localTestAnalysis({language:l,code,topic,score,answers});
 
   if(!ai){
-    return res.json({ok:true,analysis:fallback(),provider:"local-fallback",model:null,score,total:answers.length});
+    return res.status(503).json({ok:false,provider:"gemini-error",error:"GEMINI_API_KEY sozlanmagan",score,total:answers.length});
   }
 
   const compact=answers.map((a,i)=>[
@@ -236,8 +236,8 @@ ${compact}`;
   for(let attempt=1;attempt<=3;attempt++){
     try{
       console.log(`TEST_ANALYSIS_GEMINI_ATTEMPT_${attempt}`,{model:GEMINI_MODEL,answers:answers.length});
-      const response=await ai.interactions.create({model:GEMINI_MODEL,input:prompt});
-      const analysis=String(response?.output_text||"").trim();
+      const response=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt});
+      const analysis=String(response?.text||"").trim();
       if(analysis){
         return res.json({ok:true,analysis,provider:"gemini",model:GEMINI_MODEL,attempt,score,total:answers.length});
       }
@@ -292,8 +292,8 @@ ${JSON.stringify(source)}`;
     let last="";
     for(let attempt=1;attempt<=3;attempt++){
       try{
-        const r=await ai.interactions.create({model:GEMINI_MODEL,input:prompt});
-        const raw=String(r?.output_text||"").trim();
+        const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt});
+        const raw=String(r?.text||"").trim();
         const parsed=parseJSON(raw);
         const out=Array.isArray(parsed?.questions)?parsed.questions:[];
         if(out.length===questions.length){
@@ -343,7 +343,7 @@ app.use((err,req,res,next)=>{
 });
 
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
-console.log("GEMINI API MODE: INTERACTIONS");
+console.log("GEMINI API MODE: GENERATE_CONTENT");
 app.listen(PORT,"0.0.0.0",()=>{
  console.log("HUQUQIY AI COURT ENGINE V21 MULTILINGUAL TESTS");
  console.log("PORT:",PORT);
