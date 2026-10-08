@@ -11,6 +11,76 @@ const GEMINI_BACKUP_MODEL =
   process.env.GEMINI_BACKUP_MODEL || "";
 
 const GEMINI_MAX_RETRIES = 2;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_TIMEOUT_MS = 25000;
+
+async function openAIRequest(prompt, language, jsonMode = false) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY sozlanmagan");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: prompt.startsWith("LANGUAGE:") ? systemPrompt(language) : `${languageRule(language)} Do not invent legal facts or article numbers. ${jsonMode ? "Return only valid JSON." : "Provide a clear structured analysis in plain text."}` },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.4,
+        ...(jsonMode ? { response_format: { type: "json_object" } } : {})
+      }),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const reason = data?.error?.message || response.statusText;
+      throw new Error(`OpenAI HTTP ${response.status}: ${String(reason).slice(0, 350)}`);
+    }
+    const output = data?.choices?.[0]?.message?.content;
+    if (typeof output !== "string" || !output.trim()) throw new Error("OpenAI bo'sh javob qaytardi");
+    return { text: output, model: data.model || OPENAI_MODEL, provider: "openai" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function aiRequest(prompt, language, jsonMode = false) {
+  let openAIError;
+  if (OPENAI_API_KEY) {
+    try { return await openAIRequest(prompt, language, jsonMode); }
+    catch (e) {
+      openAIError = e;
+      console.error("OPENAI_REQUEST_ERROR", String(e?.message || e).slice(0, 450));
+    }
+  }
+  if (ai) {
+    try {
+      if (jsonMode) {
+        const result = await fastGeminiRequest(prompt, language);
+        return { ...result, provider: "gemini" };
+      }
+      const models = [GEMINI_MODEL, GEMINI_BACKUP_MODEL].filter(Boolean);
+      let lastError;
+      for (const model of models) {
+        try {
+          const result = await ai.models.generateContent({model, contents:prompt, config:{systemInstruction:languageRule(language)}});
+          if (result?.text?.trim()) return {text:result.text,model,provider:"gemini"};
+        } catch (e) { lastError=e; console.error("GEMINI_FALLBACK_ERROR", String(e?.message||e).slice(0,350)); }
+      }
+      throw lastError || new Error("Gemini bo'sh javob qaytardi");
+    } catch (e) {
+      if (openAIError) throw new Error(`OpenAI: ${openAIError.message}; Gemini: ${String(e?.message||e)}`);
+      throw e;
+    }
+  }
+  throw openAIError || new Error("OpenAI yoki Gemini API kaliti sozlanmagan");
+}
 
 function geminiTemporaryError(error) {
   const message = String(error?.message || error || "");
@@ -179,13 +249,13 @@ function parseJSON(raw){
  try{return JSON.parse(raw)}catch{}
  const f=raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if(f){try{return JSON.parse(f[1])}catch{}}
  const a=raw.indexOf("{"),z=raw.lastIndexOf("}"); if(a>=0&&z>a)return JSON.parse(raw.slice(a,z+1));
- throw new Error("Gemini JSON qaytarmadi");
+ throw new Error("AI JSON qaytarmadi");
 }
 
 async function courtTurn(b){
  const l=lang(b.language), s=session(b.sessionId), q=txt(b.question||b.prompt,6000), a=action(q), c=caseData(b);
  if(!q) throw new Error("Savol yoki pozitsiya kiritilmagan");
- if(!ai) throw new Error("GEMINI_API_KEY sozlanmagan");
+ if(!OPENAI_API_KEY && !ai) throw new Error("AI API kaliti sozlanmagan");
 
  const prompt=`LANGUAGE: ${l}
 DIRECTION: ${txt(b.direction,100)}
@@ -214,8 +284,8 @@ ${q}
 
 Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
 
- const geminiResponse=await fastGeminiRequest(prompt,l);
- const o=parseJSON(geminiResponse.text);
+ const aiResponse=await aiRequest(prompt,l,true);
+ const o=parseJSON(aiResponse.text);
  const result={
   kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
   target:o.target==null?null:txt(o.target,100),
@@ -225,10 +295,10 @@ Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish 
  };
  if(!result.answer)Object.assign(result,fallback(l,a));
  remember(s,{at:new Date().toISOString(),student:q,answer:result.answer,judgeReaction:result.judgeReaction,kind:result.kind,stage:txt(b.stage,100)});
- return{...result,provider:"gemini",model:geminiResponse.model,language:l,memoryTurns:s.turns.length};
+ return{...result,provider:aiResponse.provider,model:aiResponse.model,language:l,memoryTurns:s.turns.length};
 }
 
-app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V22",provider:"Google Gemini",model:GEMINI_MODEL,keyConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
+app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V22",provider:OPENAI_API_KEY?"OpenAI (Gemini fallback)":"Google Gemini",model:OPENAI_API_KEY?OPENAI_MODEL:GEMINI_MODEL,keyConfigured:Boolean(OPENAI_API_KEY||GEMINI_API_KEY),openaiConfigured:Boolean(OPENAI_API_KEY),geminiConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
 
 app.post("/api/court-turn",async(req,res)=>{
  try{res.json({ok:true,...await courtTurn(req.body||{})})}
@@ -236,8 +306,8 @@ app.post("/api/court-turn",async(req,res)=>{
   console.error("COURT_TURN_ERROR:",e?.message||e);
   const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
   const message=txt(e?.message||"Court engine error",500);
-  const status=!ai?503:/429|RESOURCE_EXHAUSTED/i.test(message)?429:/401|403|API_KEY_INVALID|PERMISSION_DENIED/i.test(message)?502:/404|NOT_FOUND/i.test(message)?502:503;
-  res.status(status).json({ok:false,provider:"gemini-error",language:l,error:message});
+  const status=!(OPENAI_API_KEY||ai)?503:/429|RESOURCE_EXHAUSTED/i.test(message)?429:/401|403|API_KEY_INVALID|PERMISSION_DENIED/i.test(message)?502:/404|NOT_FOUND/i.test(message)?502:503;
+  res.status(status).json({ok:false,provider:"ai-error",language:l,error:message});
  }
 });
 
@@ -293,8 +363,8 @@ app.post("/api/test-analysis", async (req,res)=>{
 
   const fallback=()=>localTestAnalysis({language:l,code,topic,score,answers});
 
-  if(!ai){
-    return res.status(503).json({ok:false,provider:"gemini-error",error:"GEMINI_API_KEY sozlanmagan",score,total:answers.length});
+  if(!OPENAI_API_KEY && !ai){
+    return res.status(503).json({ok:false,provider:"ai-error",error:"AI API kaliti sozlanmagan",score,total:answers.length});
   }
 
   const compact=answers.map((a,i)=>[
@@ -317,34 +387,14 @@ Oxirida KUCHLI TOMONLAR, ZAIF TOMONLAR va 3-5 TA AMALIY TAVSIYA ber.
 
 ${compact}`;
 
-  let lastError="";
-  for(let attempt=1;attempt<=3;attempt++){
-    try{
-      console.log(`TEST_ANALYSIS_GEMINI_ATTEMPT_${attempt}`,{model:GEMINI_MODEL,answers:answers.length});
-      const response=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt});
-      const analysis=String(response?.text||"").trim();
-      if(analysis){
-        return res.json({ok:true,analysis,provider:"gemini",model:GEMINI_MODEL,attempt,score,total:answers.length});
-      }
-      lastError="Gemini bo'sh javob qaytardi.";
-    }catch(e){
-      lastError=String(e?.message||e);
-      console.error(`TEST_ANALYSIS_ATTEMPT_${attempt}_ERROR`,lastError);
-      const temporary=/503|high demand|overload|temporar|unavailable|429|resource.exhausted/i.test(lastError);
-      if(!temporary) break;
-      if(attempt<3) await sleep(attempt*900);
-    }
+  try {
+    const result = await aiRequest(prompt,l,false);
+    return res.json({ok:true,analysis:result.text,provider:result.provider,model:result.model,score,total:answers.length});
+  } catch(e) {
+    const lastError=String(e?.message||e);
+    console.warn("TEST_ANALYSIS_FALLBACK_USED",lastError.slice(0,300));
+    return res.json({ok:true,analysis:fallback(),provider:"local-fallback",aiError:lastError.slice(0,500),score,total:answers.length});
   }
-
-  console.warn("TEST_ANALYSIS_FALLBACK_USED",lastError.slice(0,300));
-  return res.json({
-    ok:true,
-    analysis:fallback(),
-    provider:"local-fallback",
-    geminiError:lastError.slice(0,500),
-    model:GEMINI_MODEL,
-    score,total:answers.length
-  });
 });
 app.post("/api/test-translate", async (req,res)=>{
   try{
@@ -354,7 +404,7 @@ app.post("/api/test-translate", async (req,res)=>{
     const questions=Array.isArray(req.body?.questions)?req.body.questions.slice(0,20):[];
     if(target==="uz") return res.json({ok:true,questions,provider:"original"});
     if(!questions.length) return res.status(400).json({ok:false,error:"Tarjima uchun testlar kelmadi."});
-    if(!ai) return res.status(503).json({ok:false,error:"Gemini translator tayyor emas."});
+    if(!OPENAI_API_KEY && !ai) return res.status(503).json({ok:false,error:"AI tarjimon tayyor emas."});
 
     const targetName=target==="ru"?"Russian":"English";
     const source=questions.map((q,i)=>({
@@ -374,31 +424,19 @@ STRICT RULES:
 INPUT:
 ${JSON.stringify(source)}`;
 
-    let last="";
-    for(let attempt=1;attempt<=3;attempt++){
-      try{
-        const r=await ai.models.generateContent({model:GEMINI_MODEL,contents:prompt});
-        const raw=String(r?.text||"").trim();
-        const parsed=parseJSON(raw);
-        const out=Array.isArray(parsed?.questions)?parsed.questions:[];
-        if(out.length===questions.length){
-          const safe=out.map((x,i)=>({
-            id:questions[i].id,
-            q:txt(x.q,1200)||questions[i].q,
-            options:Array.isArray(x.options)&&x.options.length===4?x.options.map(v=>txt(v,700)):questions[i].options,
-            correct:questions[i].correct,
-            explanation:txt(x.explanation,1200)||questions[i].explanation,
-            legalBasis:txt(x.legalBasis,600)||questions[i].legalBasis
-          }));
-          return res.json({ok:true,questions:safe,provider:"gemini",language:target});
-        }
-        last="Gemini tarjimada savollar sonini o'zgartirdi.";
-      }catch(e){
-        last=String(e?.message||e);
-        if(attempt<3) await sleep(attempt*900);
-      }
-    }
-    return res.status(503).json({ok:false,error:"Tarjima xizmati vaqtincha band: "+last.slice(0,300)});
+    const result=await aiRequest(prompt,target,true);
+    const parsed=parseJSON(result.text);
+    const out=Array.isArray(parsed?.questions)?parsed.questions:[];
+    if(out.length!==questions.length) throw new Error("AI tarjimada savollar sonini o'zgartirdi.");
+    const safe=out.map((x,i)=>({
+      id:questions[i].id,
+      q:txt(x.q,1200)||questions[i].q,
+      options:Array.isArray(x.options)&&x.options.length===4?x.options.map(v=>txt(v,700)):questions[i].options,
+      correct:questions[i].correct,
+      explanation:txt(x.explanation,1200)||questions[i].explanation,
+      legalBasis:txt(x.legalBasis,600)||questions[i].legalBasis
+    }));
+    return res.json({ok:true,questions:safe,provider:result.provider,model:result.model,language:target});
   }catch(e){
     return res.status(500).json({ok:false,error:"Test tarjima xatosi: "+String(e?.message||e).slice(0,500)});
   }
@@ -409,8 +447,9 @@ app.get("/api/test-analysis/health", async (req,res)=>{
     ok:true,
     route:"/api/test-analysis",
     geminiConfigured:!!process.env.GEMINI_API_KEY,
-    clientReady:!!ai,
-    model:GEMINI_MODEL
+    clientReady:!!(OPENAI_API_KEY||ai),
+    openaiConfigured:!!OPENAI_API_KEY,
+    model:OPENAI_API_KEY?OPENAI_MODEL:GEMINI_MODEL
   });
 });
 
@@ -428,11 +467,12 @@ app.use((err,req,res,next)=>{
 });
 
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
-console.log("GEMINI API MODE: GENERATE_CONTENT");
+console.log("AI PROVIDER:",OPENAI_API_KEY?"OPENAI + GEMINI FALLBACK":"GEMINI");
 app.listen(PORT,"0.0.0.0",()=>{
  console.log("HUQUQIY AI COURT ENGINE V21 MULTILINGUAL TESTS");
  console.log("PORT:",PORT);
  console.log("MODEL:",GEMINI_MODEL);
  console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
+ console.log("OPENAI KEY:",OPENAI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
  console.log("EXPRESS 5 WILDCARD FIX: OK");
 });
