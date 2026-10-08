@@ -128,11 +128,12 @@ ${q}
 
 Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish uchun kazus faktlarini o‘zgartirma. FAQAT JSON qaytar.`;
 
- const r=await ai.interactions.create({
+ const r=await ai.models.generateContent({
    model:GEMINI_MODEL,
-   input:systemPrompt(l)+"\n\n"+prompt
+   contents:prompt,
+   config:{systemInstruction:systemPrompt(l),responseMimeType:"application/json",temperature:0.4}
  });
- const o=parseJSON(r.output_text);
+ const o=parseJSON(r.text || "");
  const result={
   kind:["QUESTION","END","OBJECTION","MOTION","STATEMENT"].includes(txt(o.kind,30).toUpperCase())?txt(o.kind,30).toUpperCase():a,
   target:o.target==null?null:txt(o.target,100),
@@ -152,7 +153,9 @@ app.post("/api/court-turn",async(req,res)=>{
  catch(e){
   console.error("COURT_TURN_ERROR:",e?.message||e);
   const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
-  res.status(503).json({ok:false,provider:"gemini-error",language:l,error:txt(e?.message||"Court engine error",500)});
+  const message=txt(e?.message||"Court engine error",500);
+  const status=!ai?503:/429|RESOURCE_EXHAUSTED/i.test(message)?429:/401|403|API_KEY_INVALID|PERMISSION_DENIED/i.test(message)?502:/404|NOT_FOUND/i.test(message)?502:503;
+  res.status(status).json({ok:false,provider:"gemini-error",language:l,error:message});
  }
 });
 
