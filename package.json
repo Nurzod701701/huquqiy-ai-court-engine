@@ -1,17 +1,20 @@
+
 {
   "name": "huquqiy-ai-court-engine",
-  "version": "1.0.0",
-  "description": "Huquqiy AI Court Engine - Sud Simulyatori va Protsessual Testlar",
+  "version": "2.2.0",
+  "description": "Huquqiy AI - Professional Sud Simulyatori",
+  "private": true,
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "@google/genai": "^2.24.0",
+    "@google/genai": "^1.0.0",
     "express": "^5.1.0"
   }
 }
