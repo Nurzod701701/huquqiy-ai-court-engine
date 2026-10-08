@@ -1,16 +1,9 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenAI } from "@google/genai";
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const GEMINI_BACKUP_MODEL =
-  process.env.GEMINI_BACKUP_MODEL || "";
-
-const GEMINI_MAX_RETRIES = 2;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = 25000;
@@ -51,122 +44,11 @@ async function openAIRequest(prompt, language, jsonMode = false) {
 }
 
 async function aiRequest(prompt, language, jsonMode = false) {
-  let openAIError;
-  if (OPENAI_API_KEY) {
-    try { return await openAIRequest(prompt, language, jsonMode); }
-    catch (e) {
-      openAIError = e;
-      console.error("OPENAI_REQUEST_ERROR", String(e?.message || e).slice(0, 450));
-    }
-  }
-  if (ai) {
-    try {
-      if (jsonMode) {
-        const result = await fastGeminiRequest(prompt, language);
-        return { ...result, provider: "gemini" };
-      }
-      const models = [GEMINI_MODEL, GEMINI_BACKUP_MODEL].filter(Boolean);
-      let lastError;
-      for (const model of models) {
-        try {
-          const result = await ai.models.generateContent({model, contents:prompt, config:{systemInstruction:languageRule(language)}});
-          if (result?.text?.trim()) return {text:result.text,model,provider:"gemini"};
-        } catch (e) { lastError=e; console.error("GEMINI_FALLBACK_ERROR", String(e?.message||e).slice(0,350)); }
-      }
-      throw lastError || new Error("Gemini bo'sh javob qaytardi");
-    } catch (e) {
-      if (openAIError) throw new Error(`OpenAI: ${openAIError.message}; Gemini: ${String(e?.message||e)}`);
-      throw e;
-    }
-  }
-  throw openAIError || new Error("OpenAI yoki Gemini API kaliti sozlanmagan");
-}
-
-function geminiTemporaryError(error) {
-  const message = String(error?.message || error || "");
-
-  return (
-    /503|UNAVAILABLE|high demand|overload|temporar/i.test(message) ||
-    /429|RESOURCE_EXHAUSTED|rate limit/i.test(message)
-  );
-}
-
-function geminiModelUnavailable(error) {
-  const message = String(error?.message || error || "");
-
-  return /404|NOT_FOUND|model.*not.*found|model.*no longer available/i.test(message);
-}
-
-function geminiWait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function fastGeminiRequest(prompt, language) {
-  if (!ai) {
-    throw new Error("GEMINI_API_KEY sozlanmagan");
-  }
-
-  const models = [
-    GEMINI_MODEL,
-    GEMINI_BACKUP_MODEL
-  ].filter((model, index, arr) =>
-    model && arr.indexOf(model) === index
-  );
-
-  let lastError;
-
-  for (const model of models) {
-    for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            systemInstruction: systemPrompt(language),
-            responseMimeType: "application/json",
-            temperature: 0.4
-          }
-        });
-
-        if (!response?.text?.trim()) {
-          throw new Error("Gemini bo'sh javob qaytardi");
-        }
-
-        return {
-          text: response.text,
-          model
-        };
-
-      } catch (error) {
-        lastError = error;
-
-        console.error("GEMINI_ATTEMPT_ERROR", {
-          model,
-          attempt: attempt + 1,
-          message: String(error?.message || error).slice(0, 500)
-        });
-
-        if (geminiModelUnavailable(error)) {
-          break;
-        }
-
-        if (!geminiTemporaryError(error)) {
-          throw error;
-        }
-
-        if (attempt < GEMINI_MAX_RETRIES) {
-          await geminiWait(1200 * (attempt + 1));
-        }
-      }
-    }
-  }
-
-  throw lastError || new Error("Gemini javob bermadi");
+  return openAIRequest(prompt, language, jsonMode);
 }
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -255,7 +137,7 @@ function parseJSON(raw){
 async function courtTurn(b){
  const l=lang(b.language), s=session(b.sessionId), q=txt(b.question||b.prompt,6000), a=action(q), c=caseData(b);
  if(!q) throw new Error("Savol yoki pozitsiya kiritilmagan");
- if(!OPENAI_API_KEY && !ai) throw new Error("AI API kaliti sozlanmagan");
+ if(!OPENAI_API_KEY) throw new Error("AI API kaliti sozlanmagan");
 
  const prompt=`LANGUAGE: ${l}
 DIRECTION: ${txt(b.direction,100)}
@@ -298,7 +180,7 @@ Talabaning ayni so‘ziga dinamik reaksiya qil. Talabaning fikriga qo‘shilish 
  return{...result,provider:aiResponse.provider,model:aiResponse.model,language:l,memoryTurns:s.turns.length};
 }
 
-app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V22",provider:OPENAI_API_KEY?"OpenAI (Gemini fallback)":"Google Gemini",model:OPENAI_API_KEY?OPENAI_MODEL:GEMINI_MODEL,keyConfigured:Boolean(OPENAI_API_KEY||GEMINI_API_KEY),openaiConfigured:Boolean(OPENAI_API_KEY),geminiConfigured:Boolean(GEMINI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
+app.get("/api/health",(req,res)=>res.json({ok:true,service:"Huquqiy AI Court Engine",version:"V23",provider:"OpenAI",model:OPENAI_MODEL,keyConfigured:Boolean(OPENAI_API_KEY),openaiConfigured:Boolean(OPENAI_API_KEY),languages:["uz","ru","en"],sessions:sessions.size}));
 
 app.post("/api/court-turn",async(req,res)=>{
  try{res.json({ok:true,...await courtTurn(req.body||{})})}
@@ -306,7 +188,7 @@ app.post("/api/court-turn",async(req,res)=>{
   console.error("COURT_TURN_ERROR:",e?.message||e);
   const l=lang(req.body?.language),a=action(req.body?.question||req.body?.prompt);
   const message=txt(e?.message||"Court engine error",500);
-  const status=!(OPENAI_API_KEY||ai)?503:/429|RESOURCE_EXHAUSTED/i.test(message)?429:/401|403|API_KEY_INVALID|PERMISSION_DENIED/i.test(message)?502:/404|NOT_FOUND/i.test(message)?502:503;
+  const status=!(OPENAI_API_KEY)?503:/429|RESOURCE_EXHAUSTED/i.test(message)?429:/401|403|API_KEY_INVALID|PERMISSION_DENIED/i.test(message)?502:/404|NOT_FOUND/i.test(message)?502:503;
   res.status(status).json({ok:false,provider:"ai-error",language:l,error:message});
  }
 });
@@ -343,11 +225,11 @@ function localTestAnalysis({language,code,topic,score,answers}){
      `Sizning javobingiz: ${txt(a.student,220)}\nTo‘g‘ri javob: ${txt(a.correct,220)}\nIzoh: ${txt(a.explanation,450)}\nHuquqiy asos: ${txt(a.legalBasis,220)}`);
  }).join("\n\n");
 
- if(l==="ru") return `РЕЗУЛЬТАТ: ${score}/${answers.length} (${pct}%)\nВерных ответов: ${correct.length}. Ошибок: ${wrong.length}.\n\nАНАЛИЗ ВСЕХ ОТВЕТОВ\n${rows}\n\nСИЛЬНЫЕ СТОРОНЫ\nВы правильно ответили на ${correct.length} из ${answers.length} вопросов по теме «${topic}».\n\nСЛАБЫЕ СТОРОНЫ\n${wrong.length?`Повторите нормы и логику по ${wrong.length} ошибочным вопросам выше.`:"Существенных ошибок не выявлено; углубите понимание процессуальной логики и применения норм."}\n\nРЕКОМЕНДАЦИИ\n1. Повторите правовые основания каждого ошибочного ответа.\n2. Сопоставляйте вопрос с процессуальной стадией и полномочиями участников.\n3. Объясняйте, почему выбранный вариант верен, а остальные неверны.\n4. Повторно пройдите тему после изучения ошибок.\n\nПримечание: Gemini временно недоступен, поэтому показан резервный анализ на основе сохранённых ответов теста.`;
+ if(l==="ru") return `РЕЗУЛЬТАТ: ${score}/${answers.length} (${pct}%)\nВерных ответов: ${correct.length}. Ошибок: ${wrong.length}.\n\nАНАЛИЗ ВСЕХ ОТВЕТОВ\n${rows}\n\nСИЛЬНЫЕ СТОРОНЫ\nВы правильно ответили на ${correct.length} из ${answers.length} вопросов по теме «${topic}».\n\nСЛАБЫЕ СТОРОНЫ\n${wrong.length?`Повторите нормы и логику по ${wrong.length} ошибочным вопросам выше.`:"Существенных ошибок не выявлено; углубите понимание процессуальной логики и применения норм."}\n\nРЕКОМЕНДАЦИИ\n1. Повторите правовые основания каждого ошибочного ответа.\n2. Сопоставляйте вопрос с процессуальной стадией и полномочиями участников.\n3. Объясняйте, почему выбранный вариант верен, а остальные неверны.\n4. Повторно пройдите тему после изучения ошибок.\n\nПримечание: Сервис ИИ временно недоступен, поэтому показан резервный анализ на основе сохранённых ответов теста.`;
 
- if(l==="en") return `RESULT: ${score}/${answers.length} (${pct}%)\nCorrect: ${correct.length}. Wrong: ${wrong.length}.\n\nALL ANSWERS ANALYSIS\n${rows}\n\nSTRENGTHS\nYou answered ${correct.length} of ${answers.length} questions correctly in “${topic}”.\n\nWEAKNESSES\n${wrong.length?`Review the rules and reasoning behind the ${wrong.length} incorrect answers above.`:"No material errors were found; deepen your understanding of procedural reasoning and application."}\n\nRECOMMENDATIONS\n1. Review the legal basis for every incorrect answer.\n2. Connect each question to the procedural stage and participant powers.\n3. Explain why the selected option is correct and why alternatives are not.\n4. Retake the topic after reviewing mistakes.\n\nNote: Gemini is temporarily unavailable, so this is a fallback analysis based on the stored test answers.`;
+ if(l==="en") return `RESULT: ${score}/${answers.length} (${pct}%)\nCorrect: ${correct.length}. Wrong: ${wrong.length}.\n\nALL ANSWERS ANALYSIS\n${rows}\n\nSTRENGTHS\nYou answered ${correct.length} of ${answers.length} questions correctly in “${topic}”.\n\nWEAKNESSES\n${wrong.length?`Review the rules and reasoning behind the ${wrong.length} incorrect answers above.`:"No material errors were found; deepen your understanding of procedural reasoning and application."}\n\nRECOMMENDATIONS\n1. Review the legal basis for every incorrect answer.\n2. Connect each question to the procedural stage and participant powers.\n3. Explain why the selected option is correct and why alternatives are not.\n4. Retake the topic after reviewing mistakes.\n\nNote: The AI service is temporarily unavailable, so this is a fallback analysis based on the stored test answers.`;
 
- return `NATIJA: ${score}/${answers.length} (${pct}%)\nTo‘g‘ri javoblar: ${correct.length} ta. Xatolar: ${wrong.length} ta.\n\nBARCHA JAVOBLAR TAHLILI\n${rows}\n\nKUCHLI TOMONLAR\n“${topic}” mavzusida ${answers.length} savoldan ${correct.length} tasiga to‘g‘ri javob berdingiz.\n\nZAIF TOMONLAR\n${wrong.length?`Yuqoridagi ${wrong.length} ta xato savol bo‘yicha norma, protsessual bosqich va javob mantig‘ini qayta ko‘rib chiqing.`:"Jiddiy xato aniqlanmadi. Endi protsessual normalarni amaliy vaziyatga qo‘llashni chuqurlashtiring."}\n\nTAVSIYALAR\n1. Har bir xato javobning huquqiy asosini qayta o‘qing.\n2. Savolni protsessual bosqich va ishtirokchi vakolati bilan bog‘lang.\n3. Nega aynan shu variant to‘g‘ri, qolganlari noto‘g‘riligini izohlashga odatlaning.\n4. Xatolarni o‘rgangach mavzuni qayta ishlang.\n\nEslatma: Gemini vaqtincha band bo‘lgani uchun saqlangan test javoblari asosida zaxira tahlil ko‘rsatildi.`;
+ return `NATIJA: ${score}/${answers.length} (${pct}%)\nTo‘g‘ri javoblar: ${correct.length} ta. Xatolar: ${wrong.length} ta.\n\nBARCHA JAVOBLAR TAHLILI\n${rows}\n\nKUCHLI TOMONLAR\n“${topic}” mavzusida ${answers.length} savoldan ${correct.length} tasiga to‘g‘ri javob berdingiz.\n\nZAIF TOMONLAR\n${wrong.length?`Yuqoridagi ${wrong.length} ta xato savol bo‘yicha norma, protsessual bosqich va javob mantig‘ini qayta ko‘rib chiqing.`:"Jiddiy xato aniqlanmadi. Endi protsessual normalarni amaliy vaziyatga qo‘llashni chuqurlashtiring."}\n\nTAVSIYALAR\n1. Har bir xato javobning huquqiy asosini qayta o‘qing.\n2. Savolni protsessual bosqich va ishtirokchi vakolati bilan bog‘lang.\n3. Nega aynan shu variant to‘g‘ri, qolganlari noto‘g‘riligini izohlashga odatlaning.\n4. Xatolarni o‘rgangach mavzuni qayta ishlang.\n\nEslatma: AI xizmati vaqtincha ishlamagani uchun saqlangan test javoblari asosida zaxira tahlil ko‘rsatildi.`;
 }
 
 app.post("/api/test-analysis", async (req,res)=>{
@@ -363,7 +245,7 @@ app.post("/api/test-analysis", async (req,res)=>{
 
   const fallback=()=>localTestAnalysis({language:l,code,topic,score,answers});
 
-  if(!OPENAI_API_KEY && !ai){
+  if(!OPENAI_API_KEY){
     return res.status(503).json({ok:false,provider:"ai-error",error:"AI API kaliti sozlanmagan",score,total:answers.length});
   }
 
@@ -404,7 +286,7 @@ app.post("/api/test-translate", async (req,res)=>{
     const questions=Array.isArray(req.body?.questions)?req.body.questions.slice(0,20):[];
     if(target==="uz") return res.json({ok:true,questions,provider:"original"});
     if(!questions.length) return res.status(400).json({ok:false,error:"Tarjima uchun testlar kelmadi."});
-    if(!OPENAI_API_KEY && !ai) return res.status(503).json({ok:false,error:"AI tarjimon tayyor emas."});
+    if(!OPENAI_API_KEY) return res.status(503).json({ok:false,error:"AI tarjimon tayyor emas."});
 
     const targetName=target==="ru"?"Russian":"English";
     const source=questions.map((q,i)=>({
@@ -442,16 +324,7 @@ ${JSON.stringify(source)}`;
   }
 });
 
-app.get("/api/test-analysis/health", async (req,res)=>{
-  res.json({
-    ok:true,
-    route:"/api/test-analysis",
-    geminiConfigured:!!process.env.GEMINI_API_KEY,
-    clientReady:!!(OPENAI_API_KEY||ai),
-    openaiConfigured:!!OPENAI_API_KEY,
-    model:OPENAI_API_KEY?OPENAI_MODEL:GEMINI_MODEL
-  });
-});
+app.get("/api/test-analysis/health", (req,res)=>res.json({ok:true,route:"/api/test-analysis",clientReady:!!OPENAI_API_KEY,openaiConfigured:!!OPENAI_API_KEY,model:OPENAI_MODEL}));
 
 /* EXPRESS 5 FIX: app.get("*") YO‘Q */
 app.use((req,res,next)=>{
@@ -467,12 +340,11 @@ app.use((err,req,res,next)=>{
 });
 
 console.log("TEST ANALYSIS ROUTE: /api/test-analysis READY");
-console.log("AI PROVIDER:",OPENAI_API_KEY?"OPENAI + GEMINI FALLBACK":"GEMINI");
+console.log("AI PROVIDER: OPENAI ONLY");
 app.listen(PORT,"0.0.0.0",()=>{
- console.log("HUQUQIY AI COURT ENGINE V21 MULTILINGUAL TESTS");
+ console.log("HUQUQIY AI COURT ENGINE V23 OPENAI ONLY");
  console.log("PORT:",PORT);
- console.log("MODEL:",GEMINI_MODEL);
- console.log("GEMINI KEY:",GEMINI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
+ console.log("MODEL:",OPENAI_MODEL);
  console.log("OPENAI KEY:",OPENAI_API_KEY?"CONFIGURED":"NOT CONFIGURED");
  console.log("EXPRESS 5 WILDCARD FIX: OK");
 });
