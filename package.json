@@ -1,20 +1,35 @@
 
 {
-  "name": "huquqiy-ai-court-engine",
-  "version": "2.2.0",
-  "description": "Huquqiy AI - Professional Sud Simulyatori",
+  "name": "sud-simulyatori",
+  "version": "24.0.0",
+  "description": "Professional sud simulyatori: virtual sud majlislari, huquqiy testlar va Gemini AI tahlili",
   "private": true,
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "test": "npm run check"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
   },
   "dependencies": {
-    "@google/genai": "^1.0.0",
+    "@google/genai": "^1.30.0",
     "express": "^5.1.0"
-  }
+  },
+  "keywords": [
+    "sud-simulyatori",
+    "virtual-court",
+    "legal-education",
+    "courtroom-simulation",
+    "legal-tests",
+    "uzbek",
+    "russian",
+    "english",
+    "gemini-ai"
+  ],
+  "license": "UNLICENSED"
 }
